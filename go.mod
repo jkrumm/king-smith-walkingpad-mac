@@ -2,7 +2,10 @@ module github.com/jkrumm/king-smith-walkingpad-mac
 
 go 1.26.3
 
-require tinygo.org/x/bluetooth v0.10.0
+require (
+	github.com/BurntSushi/toml v1.6.0
+	tinygo.org/x/bluetooth v0.10.0
+)
 
 require (
 	github.com/go-ole/go-ole v1.2.6 // indirect

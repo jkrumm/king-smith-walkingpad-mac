@@ -520,12 +520,19 @@ weight_kg = 80.0       # used for calorie computation; default fallback
 
 [argo]
 url = "https://argo.jkrumm.com/api"
-# Either inline token, or 1Password ref resolved by `op` at daemon startup:
+# Optional inline token. Preferred path is the env var KSWP_ARGO_TOKEN, injected
+# via `op run` or a one-shot LaunchAgent `EnvironmentVariables` entry. The
+# binary does not shell out to `op` — non-jkrumm installs simply leave both
+# empty and the sync worker stays disabled.
 # token = "Bearer abc…"
-# op_token_ref = "op://Private/argo/api_token"
 ```
 
-Resolution order: env vars (`KSWP_*`) override TOML override defaults.
+Resolution order: env vars override TOML override defaults. The small env set is:
+`KSWP_LOG_LEVEL`, `KSWP_HTTP_PORT`, `KSWP_HTTP_TOKEN`, `KSWP_ARGO_URL`, `KSWP_ARGO_TOKEN`.
+TOML covers everything else.
+
+On-disk log sinks: structured JSONL at `/tmp/walkingpad.jsonl`, pretty stderr
+captured by launchd into `/tmp/walkingpad.log` via the plist.
 
 ---
 

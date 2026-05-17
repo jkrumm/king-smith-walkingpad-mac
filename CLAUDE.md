@@ -101,7 +101,7 @@ For BLE work, prefer `make run` over the LaunchAgent (faster iteration, foregrou
 
 - Argo lives at `~/SourceRoot/argo`. New domain goes in `apps/api/src/routes/walking-pad.ts`. New Drizzle table `walking_pad_sessions` in `apps/api/src/db/schema.ts`. Follow the `weight-log` domain as the template (single file per domain, no controllers/services).
 - API base URL: `https://argo.jkrumm.com/api`. Bearer auth via `API_SECRET`.
-- Token resolution in the daemon: env `KSWP_ARGO_TOKEN` overrides `argo.token` in config TOML; if neither present, attempt `op_token_ref` via `op read --account tkrumm`.
+- Token resolution in the daemon: env `KSWP_ARGO_TOKEN` overrides `argo.token` in config TOML. If neither is set the sync worker stays disabled — the binary does **not** shell out to `op`. Inject the token via `op run -- …` when launching, or write a one-shot plist `EnvironmentVariables` entry from `op` at install time. Non-jkrumm installs simply don't sync.
 
 Per global rules: argo changes happen as a **separate PR** in the argo repo, never bundled with daemon commits.
 

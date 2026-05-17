@@ -21,7 +21,10 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/BurntSushi/toml"
+
 	"github.com/jkrumm/king-smith-walkingpad-mac/internal/ble"
+	"github.com/jkrumm/king-smith-walkingpad-mac/internal/config"
 )
 
 // Version is injected at build time via -ldflags.
@@ -46,6 +49,8 @@ func dispatch(ctx context.Context, cmd string, args []string) int {
 		return runScan(ctx, args)
 	case "connect":
 		return runConnect(ctx, args)
+	case "config":
+		return runConfig(ctx, args)
 	case "version", "--version", "-v":
 		fmt.Println(Version)
 		return 0
@@ -68,6 +73,7 @@ Usage:
 Commands:
   scan       Discover nearby WalkingPad devices
   connect    Connect, subscribe to status frames, poll ask_stats
+  config     Show the resolved configuration (defaults + TOML + env)
   version    Print the build version
   help       Show this help
 
@@ -274,6 +280,45 @@ stream span        %s
 avg frame rate     %.2f Hz
 `, total, fc, de, timeToFirst, streamSpan, rate)
 	return 0
+}
+
+func runConfig(_ context.Context, args []string) int {
+	fs := flag.NewFlagSet("config", flag.ExitOnError)
+	defaultPath, _ := config.DefaultConfigPath()
+	path := fs.String("config", defaultPath, "TOML config path (missing file uses defaults)")
+	showSecrets := fs.Bool("show-secrets", false, "print tokens verbatim instead of redacting (use sparingly)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	cfg, err := config.Load(*path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		return 1
+	}
+
+	view := cfg
+	if !*showSecrets {
+		view.Daemon.HTTPToken = redact(view.Daemon.HTTPToken)
+		view.Argo.Token = redact(view.Argo.Token)
+	}
+
+	fmt.Fprintf(os.Stderr, "# resolved from %s (missing-file = defaults, env beats TOML)\n", *path)
+	if err := toml.NewEncoder(os.Stdout).Encode(view); err != nil {
+		fmt.Fprintf(os.Stderr, "encode: %v\n", err)
+		return 1
+	}
+	if !cfg.SyncEnabled() {
+		fmt.Fprintln(os.Stderr, "\n# argo.token empty → sync worker disabled (set KSWP_ARGO_TOKEN or argo.token in TOML)")
+	}
+	return 0
+}
+
+func redact(s string) string {
+	if s == "" {
+		return ""
+	}
+	return "***redacted***"
 }
 
 func pickWalkingPad(ctx context.Context, timeout time.Duration) (ble.Discovered, error) {
