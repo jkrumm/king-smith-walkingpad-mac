@@ -13,7 +13,7 @@ BIN_DIR       := ./bin
 APP_BUNDLE    := $(BIN_DIR)/$(APP_NAME).app
 APP_INSTALL   := /Applications/$(APP_NAME).app
 PLIST_LABEL   := com.jkrumm.$(BINARY)
-PLIST_SRC     := ./scripts/$(PLIST_LABEL).plist
+PLIST_TMPL    := ./scripts/$(PLIST_LABEL).plist.tmpl
 PLIST_DST     := $(HOME)/Library/LaunchAgents/$(PLIST_LABEL).plist
 LOG_OUT       := /tmp/$(BINARY).log
 LOG_ERR       := /tmp/$(BINARY).err
@@ -55,15 +55,19 @@ build-app: build ## wrap the binary into WalkingPad.app (required for macOS Blue
 	./scripts/build-app-bundle.sh $(BIN_DIR)/$(BINARY) $(VERSION) $(APP_BUNDLE)
 	@echo "built $(APP_BUNDLE)"
 
-install: build-app install-agent ## build .app, copy to /Applications, install LaunchAgent
+install: build-app ## build .app, copy to /Applications, install LaunchAgent
 	rm -rf $(APP_INSTALL)
 	cp -R $(APP_BUNDLE) $(APP_INSTALL)
 	@echo "installed: $(APP_INSTALL)"
+	@$(MAKE) install-agent
 
 install-agent: ## install the LaunchAgent plist and load it
-	@test -f $(PLIST_SRC) || (echo "missing $(PLIST_SRC) — generate it first" && exit 1)
+	@test -f $(PLIST_TMPL) || (echo "missing $(PLIST_TMPL) — generate it first" && exit 1)
 	@mkdir -p "$(DATA_DIR)"
-	cp $(PLIST_SRC) $(PLIST_DST)
+	@mkdir -p "$(HOME)/Library/LaunchAgents"
+	@# Substitute __HOME__ — launchd does not inherit the user's $HOME, and the
+	@# daemon's config loader uses it to resolve the data dir.
+	sed "s|__HOME__|$(HOME)|g" $(PLIST_TMPL) > $(PLIST_DST)
 	launchctl unload $(PLIST_DST) 2>/dev/null || true
 	launchctl load -w $(PLIST_DST)
 	@echo "LaunchAgent loaded: $(PLIST_LABEL)"

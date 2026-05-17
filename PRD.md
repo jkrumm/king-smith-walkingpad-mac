@@ -664,7 +664,7 @@ Everything from POC plus:
 
 ## 16. Open questions & risks
 
-1. **Bluetooth permission on LaunchAgent:** does the `.app`-bundled binary actually receive the prompt when invoked by `launchd`, or does macOS suppress it? Tim-oster's app is launched manually by the user, not by launchd. **Verify in POC.** Fallback: instruct the user to launch the app once interactively before enabling the LaunchAgent.
+1. **Bluetooth permission on LaunchAgent:** ~~does the `.app`-bundled binary actually receive the prompt when invoked by `launchd`?~~ **RESOLVED 2026-05-17.** TCC keys the Bluetooth grant on the `.app` bundle's Designated Requirement (ad-hoc signature is enough), not on the launching process. As long as the user has launched the bundle interactively once to confirm the prompt, subsequent `launchctl` invocations of the same binary path inherit the grant. The `make install` flow relies on this — no separate "open the .app first" step is required after the initial install.
 
 2. **Single BLE owner:** if both the daemon and KS Fit on a phone connect to the P1, they may conflict. We're not the only client. Document this; don't try to multiplex.
 
