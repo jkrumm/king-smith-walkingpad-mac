@@ -89,6 +89,43 @@ func (m *Manager) HasOpenSession() bool {
 	return m.cur != nil
 }
 
+// CurrentSessionView is a read-only snapshot of the in-flight session, taken
+// under the Manager lock. Returns nil when no session is open. The HTTP
+// /status handler is the primary consumer.
+type CurrentSessionView struct {
+	UUID        string
+	StartedAt   time.Time
+	DurationS   int64
+	DistanceM   float64
+	Steps       int64
+	Kcal        float64
+	AvgSpeedKmh float64
+	MaxSpeedKmh float64
+}
+
+// CurrentSession returns a snapshot of the open session, or nil if none.
+func (m *Manager) CurrentSession() *CurrentSessionView {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cur == nil {
+		return nil
+	}
+	avg := 0.0
+	if m.cur.activeSeconds > 0 {
+		avg = (m.cur.totalDistanceM / 1000.0) / (m.cur.activeSeconds / 3600.0)
+	}
+	return &CurrentSessionView{
+		UUID:        m.cur.uuid,
+		StartedAt:   m.cur.startedAt,
+		DurationS:   int64(m.cur.activeSeconds),
+		DistanceM:   m.cur.totalDistanceM,
+		Steps:       m.cur.totalSteps,
+		Kcal:        m.cur.kcalAccum,
+		AvgSpeedKmh: avg,
+		MaxSpeedKmh: m.cur.maxSpeedKmh,
+	}
+}
+
 // Resume restores any in-flight session from the store. Called once during
 // daemon startup, before the BLE loop starts ingesting frames.
 //
