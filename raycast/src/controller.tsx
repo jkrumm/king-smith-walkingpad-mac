@@ -14,23 +14,38 @@ import {
 import { useCallback, useMemo } from "react";
 import { api, clampSpeed, SPEED_GRID, speedStep } from "./lib/api";
 import {
+  asImage,
+  barChart,
+  gauge,
+  lineChart,
+  progressRing,
+} from "./lib/charts";
+import {
   formatDistance,
   formatDuration,
   formatDurationLong,
   formatKcal,
   formatSpeed,
   formatStepsShort,
+  formatTime,
 } from "./lib/format";
-import { useStatus } from "./lib/hooks";
-import { resampleForSparkline, sparkline } from "./lib/sparkline";
+import { useDailyBreakdown, useSessions, useStatus } from "./lib/hooks";
 import { isRunning, stateDisplay } from "./lib/state";
-import type { CurrentSession, Status } from "./lib/types";
+import type { CurrentSession, Sample, Session, Status } from "./lib/types";
 
 const REFRESH_MS = 1000;
+const STEP_GOAL = 8000;
+const DISTANCE_GOAL_KM = 5;
 
 export default function Controller() {
-  const { data, isLoading, revalidate, error } = useStatus(REFRESH_MS);
+  const status = useStatus(REFRESH_MS);
+  const daily = useDailyBreakdown(7);
+  const recent = useSessions(8);
   const step = useMemo(() => speedStep(), []);
+
+  const data = status.data;
+  const error = status.error;
+  const running = isRunning(data?.belt_state);
 
   const runAction = useCallback(
     async (label: string, fn: () => Promise<unknown>) => {
@@ -42,17 +57,15 @@ export default function Controller() {
         await fn();
         toast.style = Toast.Style.Success;
         toast.title = `${label} ✓`;
-        revalidate();
+        status.revalidate();
       } catch (e) {
         toast.style = Toast.Style.Failure;
         toast.title = label;
         toast.message = (e as Error).message;
       }
     },
-    [revalidate],
+    [status],
   );
-
-  const running = isRunning(data?.belt_state);
 
   const onStart = (speed?: number) =>
     runAction(`Start${speed ? ` at ${speed.toFixed(1)} km/h` : ""}`, () =>
@@ -65,8 +78,6 @@ export default function Controller() {
     const next = clampSpeed((data?.speed_kmh ?? 1.0) + delta);
     return onSetSpeed(next);
   };
-  // Preset speeds: when the belt is running this is a live speed change;
-  // when stopped it's an explicit "start at X" — never both.
   const onPresetSpeed = (v: number) => (running ? onSetSpeed(v) : onStart(v));
   const onSync = () =>
     runAction("Sync to Argo", async () => {
@@ -74,14 +85,27 @@ export default function Controller() {
       return r;
     });
 
-  const markdown = useMemo(() => renderMarkdown(data, error), [data, error]);
-  const metadata = useMemo(() => renderMetadata(data), [data]);
+  // Memo the markdown so the 1 Hz refresh tick doesn't regenerate the big SVGs
+  // unless the underlying numbers actually moved. We pass `markdownKey` through
+  // the deps array to make the cache key explicit instead of relying on object
+  // identity from useStatus.
+  const markdownKey = useMemo(
+    () => buildMarkdownKey(data, daily.buckets, recent.data?.sessions),
+    [data, daily.buckets, recent.data?.sessions],
+  );
+  // Deliberately keyed only on markdownKey — including the raw deps would
+  // bust the memo every 1 s revalidation tick and defeat the optimisation.
+  const markdown = useMemo(
+    () =>
+      renderMarkdown(data, error, daily.buckets, recent.data?.sessions ?? []),
+    [markdownKey],
+  );
 
   return (
     <Detail
-      isLoading={isLoading}
+      isLoading={status.isLoading && !data}
       markdown={markdown}
-      metadata={metadata}
+      metadata={renderMetadata(data)}
       navigationTitle="WalkingPad"
       actions={
         <ActionPanel>
@@ -138,21 +162,13 @@ export default function Controller() {
               title="Refresh"
               icon={Icon.ArrowClockwise}
               shortcut={{ modifiers: ["cmd"], key: "r" }}
-              onAction={revalidate}
+              onAction={status.revalidate}
             />
             <Action
               title="Sync to Argo"
               icon={Icon.Upload}
               shortcut={{ modifiers: ["cmd"], key: "y" }}
               onAction={onSync}
-            />
-            <Action
-              title="Open Today"
-              icon={Icon.Calendar}
-              shortcut={{ modifiers: ["cmd"], key: "t" }}
-              onAction={() =>
-                launchCommand({ name: "today", type: LaunchType.UserInitiated })
-              }
             />
             <Action
               title="Open History"
@@ -178,9 +194,33 @@ function quickShortcut(idx: number): Keyboard.Shortcut | undefined {
   return { modifiers: ["cmd"], key: String(idx + 1) as Keyboard.KeyEquivalent };
 }
 
+// --- Markdown rendering ----------------------------------------------------
+
+function buildMarkdownKey(
+  data: Status | undefined,
+  buckets: { distanceKm: number; steps: number }[],
+  recent: Session[] | undefined,
+): string {
+  if (!data) return "none";
+  const cs = data.current_session;
+  const csKey = cs
+    ? `${cs.uuid}:${cs.duration_s}:${Math.round(cs.distance_m)}:${cs.steps}:${Math.round(data.speed_kmh ?? 0 * 10) / 10}`
+    : "no";
+  const bk = buckets
+    .map((b) => `${b.distanceKm.toFixed(2)}/${b.steps}`)
+    .join(",");
+  const rk = (recent ?? [])
+    .slice(0, 5)
+    .map((s) => s.uuid)
+    .join(",");
+  return `${data.connected}|${data.belt_state ?? "?"}|${(data.speed_kmh ?? 0).toFixed(1)}|${Math.round(data.today.distance_m)}|${data.today.steps}|${csKey}|${bk}|${rk}`;
+}
+
 function renderMarkdown(
   data: Status | undefined,
   error: Error | undefined,
+  buckets: ReturnType<typeof useDailyBreakdown>["buckets"],
+  recent: Session[],
 ): string {
   if (error) {
     return [
@@ -195,52 +235,157 @@ function renderMarkdown(
   }
   if (!data) return "# WalkingPad\n\nLoading…";
 
-  const sd = stateDisplay(data.connected, data.belt_state);
-  const headline = data.connected
-    ? `# ${sd.label}${data.belt_state === "ACTIVE" ? ` · ${formatSpeed(data.speed_kmh)}` : ""}`
-    : "# Disconnected";
+  if (!data.connected) return renderDisconnected(recent);
+  if (isRunning(data.belt_state)) return renderActive(data);
+  return renderStopped(data, buckets, recent);
+}
 
-  const lines: string[] = [headline, ""];
-
+function renderActive(data: Status): string {
   const cs = data.current_session;
+  const speed = data.speed_kmh ?? 0;
+
+  const lines: string[] = [];
+  lines.push(asImage(gauge({ value: speed, sublabel: "active" }), "speed"));
+  lines.push("");
+
   if (cs) {
-    lines.push(`### Current session · ${formatDuration(cs.duration_s)}`);
+    lines.push(`## Session · ${formatDuration(cs.duration_s)}`);
     lines.push(
       `**${formatDistance(cs.distance_m)}** · **${formatStepsShort(cs.steps)} steps** · ${formatKcal(cs.kcal)}`,
     );
     lines.push(
       `avg ${formatSpeed(cs.avg_speed_kmh)} · peak ${formatSpeed(cs.max_speed_kmh)}`,
     );
-    const spark = sessionSparkline(cs);
-    if (spark) {
-      lines.push("");
-      lines.push("```");
-      lines.push(spark);
-      lines.push("```");
-    }
     lines.push("");
+
+    const speeds = sampleSpeeds(cs);
+    if (speeds.length >= 2) {
+      lines.push(
+        asImage(
+          lineChart({
+            values: speeds,
+            title: "speed profile",
+            marker:
+              cs.avg_speed_kmh > 0
+                ? { value: cs.avg_speed_kmh, label: "avg" }
+                : undefined,
+            showTail: true,
+          }),
+          "session-speed",
+        ),
+      );
+      lines.push("");
+    } else {
+      lines.push(
+        "> Speed profile will appear after the session collects a few samples.",
+      );
+      lines.push("");
+    }
   }
 
-  lines.push("### Today");
   lines.push(
-    `**${formatDistance(data.today.distance_m)}** · **${formatStepsShort(data.today.steps)} steps** · ${formatDurationLong(data.today.duration_s)} · ${formatKcal(data.today.kcal)}`,
+    `### Today  ·  ${formatDistance(data.today.distance_m)} · ${formatStepsShort(data.today.steps)} steps · ${formatDurationLong(data.today.duration_s)} · ${formatKcal(data.today.kcal)}`,
   );
 
-  if (!data.connected) {
-    lines.push("");
-    lines.push("---");
-    lines.push(
-      "> Belt is offline — the daemon will reconnect automatically once it appears.",
-    );
+  return lines.join("\n");
+}
+
+function renderStopped(
+  data: Status,
+  buckets: ReturnType<typeof useDailyBreakdown>["buckets"],
+  recent: Session[],
+): string {
+  const today = data.today;
+  const todayKm = today.distance_m / 1000;
+  const lines: string[] = [];
+
+  lines.push("## Today");
+  lines.push("");
+
+  // Two progress rings side-by-side (rendered as one composite SVG via flow).
+  // Raycast markdown can place two images on the same line if separated by no
+  // newline — here we cheat and use a wider single bar chart instead, which
+  // reads better at Raycast's image scaling.
+  lines.push(
+    asImage(
+      progressRing({
+        value: today.steps,
+        goal: STEP_GOAL,
+        primary: formatStepsShort(today.steps),
+        secondary: `of ${formatStepsShort(STEP_GOAL)} steps`,
+      }),
+      "steps-progress",
+    ),
+  );
+  lines.push(
+    asImage(
+      progressRing({
+        value: todayKm,
+        goal: DISTANCE_GOAL_KM,
+        primary: todayKm.toFixed(2),
+        secondary: `of ${DISTANCE_GOAL_KM} km`,
+        color: "#0a84ff",
+      }),
+      "km-progress",
+    ),
+  );
+  lines.push("");
+  lines.push(
+    `**${formatKcal(today.kcal)}** · ${formatDurationLong(today.duration_s)}`,
+  );
+  lines.push("");
+
+  // 7-day bar chart.
+  lines.push(
+    asImage(
+      barChart({
+        data: buckets.map((b) => ({
+          label: b.label,
+          value: Math.round(b.distanceKm * 100) / 100,
+          highlight: b.isToday,
+          secondary: b.steps > 0 ? `${formatStepsShort(b.steps)}` : undefined,
+        })),
+        unit: "km",
+        title: "last 7 days · km",
+        goal: DISTANCE_GOAL_KM,
+      }),
+      "weekly",
+    ),
+  );
+  lines.push("");
+
+  // Recent sessions.
+  if (recent.length > 0) {
+    lines.push("### Recent sessions");
+    const rows = recent
+      .slice(0, 5)
+      .map(
+        (s) =>
+          `- **${formatTime(s.started_at)}** · ${formatDistance(s.distance_m)} · ${formatStepsShort(s.steps)} steps · ${formatDurationLong(s.duration_s)} · avg ${formatSpeed(s.avg_speed_kmh)}`,
+      );
+    lines.push(...rows);
+  } else {
+    lines.push("> No sessions logged yet. Hit ⌘↩ to start your first walk.");
   }
 
   return lines.join("\n");
 }
 
-function sessionSparkline(cs: CurrentSession): string | undefined {
-  if (!cs.samples || cs.samples.length < 2) return undefined;
-  const speeds = cs.samples.map((s) => s.speed_kmh);
-  return sparkline(resampleForSparkline(speeds, 60));
+function renderDisconnected(recent: Session[]): string {
+  const lines: string[] = [
+    "# Disconnected",
+    "",
+    "> Waiting for the WalkingPad to come into range. The daemon will reconnect automatically.",
+    "",
+  ];
+  if (recent[0]) {
+    const s = recent[0];
+    lines.push("### Last session");
+    lines.push(
+      `**${formatTime(s.started_at)}** · ${formatDistance(s.distance_m)} · ${formatStepsShort(s.steps)} steps · ${formatDurationLong(s.duration_s)}`,
+    );
+  }
+  return lines.join("\n");
 }
 
 function renderMetadata(data: Status | undefined): React.ReactNode {
@@ -269,11 +414,31 @@ function renderMetadata(data: Status | undefined): React.ReactNode {
         title="Today kcal"
         text={formatKcal(data.today.kcal)}
       />
+      {data.current_session && (
+        <>
+          <Detail.Metadata.Separator />
+          <Detail.Metadata.Label
+            title="Session avg"
+            text={formatSpeed(data.current_session.avg_speed_kmh)}
+          />
+          <Detail.Metadata.Label
+            title="Session peak"
+            text={formatSpeed(data.current_session.max_speed_kmh)}
+          />
+        </>
+      )}
     </Detail.Metadata>
   );
 }
 
-// Inline form, pushed onto the navigation stack so the controller stays focused.
+function sampleSpeeds(cs: CurrentSession): number[] {
+  return (cs.samples ?? [])
+    .map((s: Sample) => s.speed_kmh)
+    .filter((v): v is number => Number.isFinite(v));
+}
+
+// --- Action helpers --------------------------------------------------------
+
 function SetSpeedAction({ onSubmit }: { onSubmit: (v: number) => void }) {
   return (
     <Action.Push

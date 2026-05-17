@@ -26,13 +26,6 @@
       "keywords": ["walkingpad", "treadmill"]
     },
     {
-      "name": "today",
-      "title": "Today",
-      "description": "Sessions walked today with totals",
-      "mode": "view",
-      "keywords": ["walkingpad", "today", "stats"]
-    },
-    {
       "name": "history",
       "title": "History",
       "description": "Past sessions with windowed totals",

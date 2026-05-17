@@ -24,8 +24,6 @@ declare namespace Preferences {
   export type Controller = ExtensionPreferences & {}
   /** Preferences accessible in the `menu-bar` command */
   export type MenuBar = ExtensionPreferences & {}
-  /** Preferences accessible in the `today` command */
-  export type Today = ExtensionPreferences & {}
   /** Preferences accessible in the `history` command */
   export type History = ExtensionPreferences & {}
   /** Preferences accessible in the `set-speed` command */
@@ -37,8 +35,6 @@ declare namespace Arguments {
   export type Controller = {}
   /** Arguments passed to the `menu-bar` command */
   export type MenuBar = {}
-  /** Arguments passed to the `today` command */
-  export type Today = {}
   /** Arguments passed to the `history` command */
   export type History = {}
   /** Arguments passed to the `set-speed` command */

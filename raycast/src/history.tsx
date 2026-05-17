@@ -7,6 +7,7 @@ import {
   LaunchType,
 } from "@raycast/api";
 import { useMemo, useState } from "react";
+import { asImage, barChart, lineChart } from "./lib/charts";
 import {
   dateBucket,
   formatDate,
@@ -17,9 +18,13 @@ import {
   formatStepsShort,
   formatTime,
 } from "./lib/format";
-import { useSessionDetail, useSessions, useSummary } from "./lib/hooks";
-import { resampleForSparkline, sparkline } from "./lib/sparkline";
-import type { Period, Session } from "./lib/types";
+import {
+  useDailyBreakdown,
+  useSessionDetail,
+  useSessions,
+  useSummary,
+} from "./lib/hooks";
+import type { Period, Sample, Session } from "./lib/types";
 
 const BUCKETS = [
   "Today",
@@ -29,10 +34,18 @@ const BUCKETS = [
   "Older",
 ] as const;
 
+const DAYS_BY_PERIOD: Record<Period, number> = {
+  today: 1,
+  week: 7,
+  month: 30,
+  all: 30,
+};
+
 export default function History() {
-  const sessions = useSessions(50);
+  const sessions = useSessions(200);
   const [period, setPeriod] = useState<Period>("week");
   const summary = useSummary(period);
+  const daily = useDailyBreakdown(DAYS_BY_PERIOD[period]);
   const [selected, setSelected] = useState<string | undefined>(undefined);
 
   const sectioned = useMemo(() => {
@@ -42,7 +55,7 @@ export default function History() {
     return groupBy(filtered, (s) => dateBucket(s.started_at));
   }, [sessions.data, period]);
 
-  const header = summary.data
+  const totalsLine = summary.data
     ? `${formatDistance(summary.data.distance_m)} · ${formatStepsShort(summary.data.steps)} steps · ${formatDurationLong(summary.data.duration_s)} · ${formatKcal(summary.data.kcal)} · ${summary.data.sessions} session${summary.data.sessions === 1 ? "" : "s"}`
     : "";
 
@@ -66,15 +79,20 @@ export default function History() {
         </List.Dropdown>
       }
     >
+      <List.Section title="Summary">
+        <SummaryItem
+          period={period}
+          totals={totalsLine}
+          buckets={daily.buckets}
+          isSelected={selected === "__summary__"}
+        />
+      </List.Section>
+
       {BUCKETS.flatMap((bucket) => {
         const rows = sectioned.get(bucket);
         if (!rows || rows.length === 0) return [];
         return [
-          <List.Section
-            key={bucket}
-            title={bucket}
-            subtitle={bucket === "Today" ? header : undefined}
-          >
+          <List.Section key={bucket} title={bucket}>
             {rows.map((s) => (
               <HistoryItem
                 key={s.uuid}
@@ -85,6 +103,7 @@ export default function History() {
           </List.Section>,
         ];
       })}
+
       {summary.data && summary.data.sessions === 0 && (
         <List.EmptyView
           icon={Icon.Footprints}
@@ -107,6 +126,88 @@ export default function History() {
         />
       )}
     </List>
+  );
+}
+
+function SummaryItem({
+  period,
+  totals,
+  buckets,
+}: {
+  period: Period;
+  totals: string;
+  buckets: ReturnType<typeof useDailyBreakdown>["buckets"];
+  isSelected: boolean;
+}) {
+  const md = useMemo(() => {
+    const lines: string[] = [];
+    const periodLabel: Record<Period, string> = {
+      today: "Today",
+      week: "Last 7 days",
+      month: "Last 30 days",
+      all: "All time (last 30 days)",
+    };
+    lines.push(`# ${periodLabel[period]}`);
+    if (totals) lines.push(`**${totals}**`);
+    lines.push("");
+    if (buckets.length > 1) {
+      lines.push(
+        asImage(
+          barChart({
+            data: buckets.map((b) => ({
+              label: b.label,
+              value: Math.round(b.distanceKm * 100) / 100,
+              highlight: b.isToday,
+              secondary: b.steps > 0 ? formatStepsShort(b.steps) : undefined,
+            })),
+            unit: "km",
+            title: "distance · km",
+          }),
+          "distance-chart",
+        ),
+      );
+      lines.push("");
+      lines.push(
+        asImage(
+          barChart({
+            data: buckets.map((b) => ({
+              label: b.label,
+              value: Math.round(b.steps / 100) / 10, // thousands of steps
+              highlight: b.isToday,
+              secondary: b.steps > 0 ? formatStepsShort(b.steps) : undefined,
+            })),
+            unit: "k",
+            title: "steps · k",
+          }),
+          "steps-chart",
+        ),
+      );
+    }
+    return lines.join("\n");
+  }, [period, totals, buckets]);
+
+  return (
+    <List.Item
+      id="__summary__"
+      title="Period summary"
+      subtitle={totals}
+      icon={Icon.BarChart}
+      detail={<List.Item.Detail markdown={md} />}
+      actions={
+        <ActionPanel>
+          <Action
+            title="Open Controller"
+            icon={Icon.ComputerChip}
+            onAction={() =>
+              launchCommand({
+                name: "controller",
+                type: LaunchType.UserInitiated,
+              })
+            }
+          />
+        </ActionPanel>
+      }
+    />
   );
 }
 
@@ -147,13 +248,6 @@ function HistoryItem({
               })
             }
           />
-          <Action
-            title="Open Today"
-            icon={Icon.Calendar}
-            onAction={() =>
-              launchCommand({ name: "today", type: LaunchType.UserInitiated })
-            }
-          />
           <Action.CopyToClipboard
             title="Copy Session UUID"
             content={session.uuid}
@@ -165,10 +259,7 @@ function HistoryItem({
   );
 }
 
-function renderDetail(
-  session: Session,
-  samples?: { speed_kmh: number }[],
-): string {
+function renderDetail(session: Session, samples?: Sample[]): string {
   const lines: string[] = [];
   lines.push(
     `# ${formatDate(session.started_at)} · ${formatTime(session.started_at)}`,
@@ -190,17 +281,24 @@ function renderDetail(
       `${session.pause_count} pause${session.pause_count > 1 ? "s" : ""}`,
     );
   }
+
   if (samples && samples.length >= 2) {
-    const series = resampleForSparkline(
-      samples.map((s) => s.speed_kmh),
-      60,
-    );
     lines.push("");
-    lines.push("**Speed profile**");
-    lines.push("```");
-    lines.push(sparkline(series));
-    lines.push("```");
+    lines.push(
+      asImage(
+        lineChart({
+          values: samples.map((s) => s.speed_kmh),
+          title: "speed profile",
+          marker:
+            session.avg_speed_kmh > 0
+              ? { value: session.avg_speed_kmh, label: "avg" }
+              : undefined,
+        }),
+        "speed-profile",
+      ),
+    );
   }
+
   if (session.synced_at) {
     lines.push("");
     lines.push(`> Synced to Argo at ${formatTime(session.synced_at)}`);
