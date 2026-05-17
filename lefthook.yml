@@ -1,0 +1,38 @@
+# Lefthook config for king-smith-walkingpad-mac.
+# Install once per clone: `brew install lefthook && lefthook install`.
+# Bypass in emergencies with `git commit --no-verify` (don't make a habit of it).
+
+pre-commit:
+  parallel: false
+  commands:
+    gofmt:
+      glob: "*.go"
+      run: |
+        if [ -n "$(gofmt -l {staged_files})" ]; then
+          echo "gofmt: files need formatting:"
+          gofmt -l {staged_files}
+          echo "fix with: gofmt -s -w {staged_files}"
+          exit 1
+        fi
+    go-mod-tidy:
+      glob: "{go.mod,go.sum}"
+      run: |
+        go mod tidy
+        if ! git diff --quiet go.mod go.sum 2>/dev/null; then
+          echo "go mod tidy changed go.mod/go.sum — stage the result and recommit"
+          exit 1
+        fi
+    govet:
+      glob: "*.go"
+      run: go vet ./...
+    golangci-lint:
+      glob: "*.go"
+      run: golangci-lint run ./...
+    test:
+      glob: "*.go"
+      run: go test -race -count=1 ./...
+
+pre-push:
+  commands:
+    test:
+      run: go test -race -count=1 ./...

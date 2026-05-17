@@ -39,6 +39,7 @@ const (
 // BeltState mirrors the raw byte at status frame offset 2.
 type BeltState uint8
 
+// BeltState values (see PRD §4.4).
 const (
 	BeltStopped  BeltState = 0
 	BeltActive   BeltState = 1
@@ -67,6 +68,7 @@ func (s BeltState) String() string {
 // Mode is the belt operating mode (auto/manual/standby).
 type Mode uint8
 
+// Mode values (see PRD §4.3).
 const (
 	ModeAuto    Mode = 0
 	ModeManual  Mode = 1
@@ -89,6 +91,7 @@ func (m Mode) String() string {
 // Button is the value of the physical remote button at status offset 16.
 type Button uint8
 
+// Physical-remote button values reported in the status frame.
 const (
 	ButtonNone Button = 0
 	ButtonUp   Button = 2
@@ -99,6 +102,7 @@ const (
 // PrefKey is the preference key used with the 10-byte set-pref command (0xA6).
 type PrefKey uint8
 
+// Preference keys for the 0xA6 set-pref command (see PRD §4.3).
 const (
 	PrefTarget      PrefKey = 1 // sub: 0=none, 1=dist, 2=cal, 3=time
 	PrefMaxSpeed    PrefKey = 3 // value: speed × 10
@@ -179,12 +183,13 @@ func uint24BE(b []byte) uint32 {
 	return uint32(b[0])<<16 | uint32(b[1])<<8 | uint32(b[2])
 }
 
-// putUint24BE writes v as 24-bit big-endian into b. v is masked to 24 bits.
+// putUint24BE writes v as 24-bit big-endian into b. The high 8 bits of v are
+// silently dropped (callers are expected to pass values that fit in 24 bits).
 func putUint24BE(b []byte, v uint32) {
 	_ = b[2]
-	b[0] = byte(v >> 16)
-	b[1] = byte(v >> 8)
-	b[2] = byte(v)
+	b[0] = byte((v >> 16) & 0xFF)
+	b[1] = byte((v >> 8) & 0xFF)
+	b[2] = byte(v & 0xFF)
 }
 
 // stdCmd builds a 6-byte F7 A2 op param CRC FD frame.

@@ -88,4 +88,10 @@ scan: build ## scan for nearby WalkingPad devices (dev tool, not the daemon)
 raycast-dev: ## open Raycast extension dev loop
 	cd raycast && npm install && npm run dev
 
-.PHONY: help build build-app run test test-cover fmt lint install install-agent uninstall-agent reload logs logs-err clean scan raycast-dev
+hooks-install: ## install lefthook pre-commit + pre-push hooks (one-time per clone)
+	@which lefthook > /dev/null || (echo "install: brew install lefthook" && exit 1)
+	lefthook install
+
+check: fmt lint test ## run the full local quality gate (fmt + lint + test)
+
+.PHONY: help build build-app run test test-cover fmt lint check hooks-install install install-agent uninstall-agent reload logs logs-err clean scan raycast-dev
