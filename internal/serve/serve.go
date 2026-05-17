@@ -6,9 +6,14 @@
 //
 //  1. ctx is cancelled — link.Run, api.ListenAndServe and the tick loop all
 //     return.
-//  2. Manager.ForceClose flushes any in-flight session with ended_at set to
-//     the last running-frame timestamp (uses a fresh short-lived context).
-//  3. store.Close releases the SQLite handle.
+//  2. store.Close releases the SQLite handle.
+//
+// Shutdown deliberately does NOT close any open session. The session row
+// stays open and the next startup resumes it (Manager.Resume), so a
+// restart while the user is still walking does not split the session in two
+// and does not lose the device's running distance counter. Sessions only
+// close via the idle-gap rule or the 6 h staleness force-close in Resume.
+// See internal/session.Manager for the full lifecycle.
 package serve
 
 import (
@@ -35,10 +40,6 @@ import (
 // At 10 s the worst-case extra wait before close is small relative to the
 // 15-min default gap.
 const tickInterval = 10 * time.Second
-
-// forceCloseTimeout caps the time we'll wait for the manager to flush an
-// in-flight session during shutdown.
-const forceCloseTimeout = 5 * time.Second
 
 // Run brings the daemon up and blocks until ctx is cancelled or a subsystem
 // fails. Returns nil on clean shutdown.
@@ -75,6 +76,19 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, version strin
 		log.Info("backfill.durations_done", "sessions_updated", n)
 	}
 	backfillCancel()
+
+	// One-shot: stitch adjacent closed sessions that were split by the
+	// pre-fix lifecycle (shutdown-close + fresh-open across `make up`).
+	// Uses the same resurrection window as the live manager so historical
+	// data ends up consistent with the new grouping rule.
+	stitchCtx, stitchCancel := context.WithTimeout(ctx, 30*time.Second)
+	stitchWindow := session.ResurrectionWindow(cfg.Session.GapMinutes)
+	if n, err := st.StitchAdjacentSessions(stitchCtx, stitchWindow); err != nil {
+		log.Warn("stitch.adjacent_failed", "err", err)
+	} else if n > 0 {
+		log.Info("stitch.adjacent_done", "sessions_merged", n, "window_min", stitchWindow.Minutes())
+	}
+	stitchCancel()
 
 	// --- session manager --------------------------------------------------
 	mgr := session.NewManager(session.Config{
@@ -208,13 +222,9 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, version strin
 
 	wg.Wait()
 
-	// --- shutdown --------------------------------------------------------
-	closeCtx, closeCancel := context.WithTimeout(context.Background(), forceCloseTimeout)
-	defer closeCancel()
-	if err := mgr.ForceClose(closeCtx, time.Now().UTC()); err != nil {
-		log.Error("force-close on shutdown", "err", err)
-	}
-
+	// Shutdown intentionally does not close the active session: the row stays
+	// open so the next startup's Manager.Resume picks up where we left off.
+	// See package docstring for the lifecycle rationale.
 	log.Info("serve.stopped")
 	return firstErr
 }

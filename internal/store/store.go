@@ -225,6 +225,47 @@ func (s *Store) MostRecentOpenSession(ctx context.Context) (*Session, error) {
 	return &sess, nil
 }
 
+// MostRecentSession returns the newest session by started_at regardless of
+// open/closed state. The manager uses this on the first running frame after
+// startup to decide whether to resurrect a recently-closed session or open a
+// fresh one. Returns (nil, nil) when the table is empty.
+func (s *Store) MostRecentSession(ctx context.Context) (*Session, error) {
+	row := s.db.QueryRowContext(ctx, sessionSelect+" ORDER BY started_at DESC LIMIT 1")
+	sess, err := scanSession(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &sess, nil
+}
+
+// ReopenSession resurrects a previously-closed session: clears ended_at and
+// synced_at so the row is treated as live again and the next CloseSession
+// re-queues it for Argo. Also bumps pause_count to reflect the gap. The
+// totals (duration_s / distance_m / …) are left untouched — they get
+// overwritten on the next close. Returns ErrNotFound if the id is unknown.
+func (s *Store) ReopenSession(ctx context.Context, sessionID int64) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE sessions SET
+			ended_at = NULL,
+			synced_at = NULL,
+			pause_count = pause_count + 1,
+			updated_at = ?
+		WHERE id = ?`,
+		formatTime(time.Now()), sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("reopen session %d: %w", sessionID, err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // GetSession returns the session and its samples in insertion order.
 func (s *Store) GetSession(ctx context.Context, uuid string) (Session, []Sample, error) {
 	row := s.db.QueryRowContext(ctx, sessionSelect+" WHERE uuid = ?", uuid)

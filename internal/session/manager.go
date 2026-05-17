@@ -1,14 +1,31 @@
 // Package session owns the session-grouping state machine that turns a stream
 // of BLE status frames into persisted sessions.
 //
-// The rules live in PRD §7 and the gotchas it references (state-byte semantics
-// per CLAUDE.md #8/#9: counters reset on every STOP, not only on STANDBY;
+// Lifecycle (single source of truth — every other layer derives from this):
+//
+//  1. The first running frame opens a session, OR resurrects a recently-closed
+//     one if its ended_at is within GapMinutes (so a coffee break inside the
+//     gap window keeps the same session UUID).
+//  2. The session stays open across stops shorter than GapMinutes.
+//  3. The first non-running frame whose timestamp is > GapMinutes past the
+//     last running frame closes the session (also enforced by Tick when no
+//     frames are arriving).
+//  4. Daemon shutdown is NOT a close trigger — we deliberately leave the row
+//     open so the next startup resumes it via Resume (no spurious split).
+//  5. Resume on startup adopts the most recent open session if it's younger
+//     than resumeMaxAge; otherwise it force-closes it at the last sample ts.
+//
+// The rules originally lived in PRD §7; this docstring is now the source of
+// truth (the PRD is updated to match). Gotchas referenced from CLAUDE.md
+// #8/#9 still apply: counters reset on every STOP, not only on STANDBY, and
 // BeltState.IsRunning() intentionally returns true for both ACTIVE and
-// STOPPING so the final decel frame is captured).
+// STOPPING so the final decel frame is captured.
 //
 // The Manager is the sole writer of session/sample rows during normal
 // operation. Every public method takes the Manager lock so external callers
-// can safely call Ingest, Tick, Resume, and ForceClose from different goroutines.
+// can safely call Ingest, Tick, Resume, and ForceClose from different
+// goroutines. ForceClose remains as a primitive for tests and explicit
+// close-now use cases; the serve loop no longer calls it on shutdown.
 package session
 
 import (
@@ -244,7 +261,7 @@ func (m *Manager) Ingest(ctx context.Context, frame ble.Status, now time.Time) e
 
 	switch {
 	case m.cur == nil && isRunning:
-		if err := m.openLocked(ctx, now); err != nil {
+		if err := m.ensureSessionLocked(ctx, now); err != nil {
 			return err
 		}
 	case m.cur == nil && !isRunning:
@@ -330,6 +347,57 @@ func (m *Manager) ForceClose(ctx context.Context, now time.Time) error {
 
 // --- internals --------------------------------------------------------------
 
+// ensureSessionLocked is the single decision point for "we just saw a running
+// frame and have no current session — what should we do?". It picks exactly
+// one of three paths:
+//
+//  1. Resurrect: most recent row is closed and its ended_at is within
+//     resurrectionWindow — same physical walk, just bridged across a long
+//     pause or a daemon restart. Re-opens the row in place, replays samples
+//     to rebuild totals, bumps pause_count.
+//  2. Continue: most recent row is still open and younger than resumeMaxAge.
+//     Normally Resume already adopted it at startup; this is the safety net
+//     for code paths that bypass Resume.
+//  3. Open: fresh UUID, fresh row, zero accumulators.
+//
+// Centralising the choice here means the rest of the manager only ever sees
+// "a valid m.cur" and never needs to second-guess the lifecycle.
+func (m *Manager) ensureSessionLocked(ctx context.Context, now time.Time) error {
+	recent, err := m.store.MostRecentSession(ctx)
+	if err != nil {
+		return fmt.Errorf("ensure session: lookup recent: %w", err)
+	}
+	if recent != nil {
+		if recent.EndedAt.Valid {
+			if now.Sub(recent.EndedAt.Time) < m.resurrectionWindow() {
+				return m.resurrectLocked(ctx, recent, now)
+			}
+		} else if now.Sub(recent.StartedAt) <= resumeMaxAge {
+			return m.replayLocked(ctx, recent)
+		}
+	}
+	return m.openLocked(ctx, now)
+}
+
+// resurrectionWindow is the max age of a closed session's ended_at that still
+// counts as "same walk" when the next running frame arrives. Delegates to the
+// package-level helper so the historical-cleanup stitch in the store package
+// can apply the exact same rule.
+func (m *Manager) resurrectionWindow() time.Duration {
+	return ResurrectionWindow(m.cfg.GapMinutes)
+}
+
+// ResurrectionWindow is the single source of truth for the "same walk?" time
+// tolerance. The close itself fires after GapMinutes of idle (so at close
+// moment, now - ended_at already equals GapMinutes); we grant another
+// GapMinutes on top so the user can come back within roughly a gap-window
+// after the close was decided. Effective idle tolerance across a
+// close+resurrect is therefore 2× GapMinutes. Used at runtime by Manager
+// and at startup by store.StitchAdjacentSessions for historical merge.
+func ResurrectionWindow(gapMinutes int) time.Duration {
+	return 2 * time.Duration(gapMinutes) * time.Minute
+}
+
 func (m *Manager) openLocked(ctx context.Context, now time.Time) error {
 	uuid := newUUIDv4()
 	id, err := m.store.OpenSession(ctx, uuid, now)
@@ -338,6 +406,28 @@ func (m *Manager) openLocked(ctx context.Context, now time.Time) error {
 	}
 	m.cur = &runState{sessionID: id, uuid: uuid, startedAt: now}
 	m.log.Info("session.open", "uuid", uuid)
+	return nil
+}
+
+// resurrectLocked clears ended_at/synced_at on the row, replays samples to
+// rebuild totals so the next CloseSession overwrites with the correct sum,
+// and bumps pause_count to record the bridged gap.
+func (m *Manager) resurrectLocked(ctx context.Context, sess *store.Session, now time.Time) error {
+	if err := m.store.ReopenSession(ctx, sess.ID); err != nil {
+		return fmt.Errorf("reopen session %s: %w", sess.UUID, err)
+	}
+	// Replay rebuilds the in-memory accumulators from persisted samples; the
+	// row's pause_count is incremented by ReopenSession above, so adjust the
+	// in-memory mirror to match what replay loaded + 1.
+	if err := m.replayLocked(ctx, sess); err != nil {
+		return err
+	}
+	m.cur.pauseCount++
+	m.log.Info("session.resurrect",
+		"uuid", sess.UUID,
+		"closed_for_s", now.Sub(sess.EndedAt.Time).Seconds(),
+		"distance_m", m.cur.totalDistanceM,
+		"active_s", m.cur.currentActiveSeconds(now))
 	return nil
 }
 

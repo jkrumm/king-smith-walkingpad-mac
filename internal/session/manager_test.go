@@ -373,6 +373,189 @@ func TestManager_ResumeBeyondMaxAgeForceCloses(t *testing.T) {
 	}
 }
 
+// --- resurrection & clean-shutdown continuity ------------------------------
+
+// TestEnsureSession_ResurrectsRecentlyClosed: a session that closed via the
+// idle-gap rule should be re-opened (not split) when the next running frame
+// arrives within the resurrection window (2× GapMinutes from ended_at). Same
+// UUID, totals continue. With test config GapMinutes=1 the window is 120 s.
+func TestEnsureSession_ResurrectsRecentlyClosed(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	m := newTestManager(t, st)
+
+	base := time.Date(2026, 5, 17, 13, 0, 0, 0, time.UTC)
+
+	// Walk briefly so we have non-zero totals to compare against.
+	_ = m.Ingest(ctx, running(4.0, 0, 0), base)
+	_ = m.Ingest(ctx, running(4.0, 10, 12), base.Add(1*time.Second))
+	_ = m.Ingest(ctx, running(4.0, 25, 30), base.Add(2*time.Second))
+
+	// Idle-gap close: stopped frame 70 s after lastRunningTs (>60 s gap) →
+	// close fires with ended_at=base+2s.
+	_ = m.Ingest(ctx, stopped(), base.Add(70*time.Second))
+	if m.HasOpenSession() {
+		t.Fatal("session should have closed on idle gap")
+	}
+	firstUUID := ""
+	{
+		sessions, _ := st.ListSessions(ctx, 10, time.Time{})
+		if len(sessions) != 1 {
+			t.Fatalf("want 1 closed session, got %d", len(sessions))
+		}
+		firstUUID = sessions[0].UUID
+	}
+
+	// User returns at base+100 s: now - ended_at = 98 s < 120 s window → resurrect.
+	resumeAt := base.Add(100 * time.Second)
+	if err := m.Ingest(ctx, running(4.0, 25, 30), resumeAt); err != nil {
+		t.Fatal(err)
+	}
+	if !m.HasOpenSession() {
+		t.Fatal("running frame within resurrection window must resurrect the closed session")
+	}
+
+	// Resurrect must reopen the same row, not create a new one.
+	sessions, _ := st.ListSessions(ctx, 10, time.Time{})
+	if len(sessions) != 1 {
+		t.Fatalf("want exactly 1 session after resurrect, got %d", len(sessions))
+	}
+	if sessions[0].UUID != firstUUID {
+		t.Errorf("resurrected UUID = %s, want %s (same row)", sessions[0].UUID, firstUUID)
+	}
+	if sessions[0].EndedAt.Valid {
+		t.Errorf("ended_at must be NULL after resurrect, got %v", sessions[0].EndedAt.Time)
+	}
+	if sessions[0].PauseCount != 1 {
+		t.Errorf("pause_count = %d, want 1 (resurrect bumps it)", sessions[0].PauseCount)
+	}
+
+	// Walk another 10 m at device-counter 35 m (continuing) and close.
+	_ = m.Ingest(ctx, running(4.0, 35, 42), resumeAt.Add(1*time.Second))
+	_ = m.Ingest(ctx, stopped(), resumeAt.Add(3*time.Minute))
+
+	sessions, _ = st.ListSessions(ctx, 10, time.Time{})
+	got := sessions[0]
+	if !got.EndedAt.Valid {
+		t.Fatal("must be closed again after second idle gap")
+	}
+	// 25 m from first burst + 10 m delta in second burst = 35 m.
+	if math.Abs(got.DistanceM-35.0) > 1e-9 {
+		t.Errorf("distance after resurrect = %g, want 35", got.DistanceM)
+	}
+	if got.UUID != firstUUID {
+		t.Errorf("close after resurrect changed UUID: %s vs %s", got.UUID, firstUUID)
+	}
+}
+
+// TestEnsureSession_StartsFreshAfterGap: outside the resurrection window
+// (2× GapMinutes from ended_at) a new session should be opened with a fresh
+// UUID, not resurrect the old one.
+func TestEnsureSession_StartsFreshAfterGap(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	m := newTestManager(t, st)
+
+	base := time.Date(2026, 5, 17, 13, 0, 0, 0, time.UTC)
+	_ = m.Ingest(ctx, running(4.0, 0, 0), base)
+	_ = m.Ingest(ctx, running(4.0, 10, 12), base.Add(1*time.Second))
+	// Close: stopped at base+70s → ended_at=base+1s.
+	_ = m.Ingest(ctx, stopped(), base.Add(70*time.Second))
+
+	sessionsBefore, _ := st.ListSessions(ctx, 10, time.Time{})
+	if len(sessionsBefore) != 1 {
+		t.Fatalf("setup: want 1 session, got %d", len(sessionsBefore))
+	}
+	firstUUID := sessionsBefore[0].UUID
+
+	// Comeback at base+5min → now - ended_at ≈ 4m59s, well past 2-min window → fresh.
+	resumeAt := base.Add(5 * time.Minute)
+	_ = m.Ingest(ctx, running(4.0, 0, 0), resumeAt)
+
+	sessions, _ := st.ListSessions(ctx, 10, time.Time{})
+	if len(sessions) != 2 {
+		t.Fatalf("want 2 sessions (old + new), got %d", len(sessions))
+	}
+	// ListSessions is newest-first.
+	if sessions[0].UUID == firstUUID {
+		t.Error("new session UUID should differ from the old one (fresh row expected)")
+	}
+}
+
+// TestShutdownThenResume_ContinuesOpenSession: the daemon no longer closes on
+// shutdown. After dropping the manager and re-Resume'ing on the same store,
+// totals must be intact, the UUID must be preserved, and the device's running
+// distance counter must NOT be re-added as a brand-new delta on the next
+// running frame (the bug that produced the "1.43 km in 44 s · avg 116 km/h").
+func TestShutdownThenResume_ContinuesOpenSession(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+
+	base := time.Date(2026, 5, 17, 13, 0, 0, 0, time.UTC)
+
+	m1 := newTestManager(t, st)
+	_ = m1.Ingest(ctx, running(4.0, 0, 0), base)
+	_ = m1.Ingest(ctx, running(4.0, 500, 600), base.Add(1*time.Second))
+	_ = m1.Ingest(ctx, running(4.0, 1000, 1200), base.Add(2*time.Second))
+	firstUUID := m1.cur.uuid
+	if m1.cur.totalDistanceM != 1000 {
+		t.Fatalf("setup: distance = %g, want 1000", m1.cur.totalDistanceM)
+	}
+
+	// Simulate `make up` restart: drop the manager without ForceClose.
+	m2 := newTestManager(t, st)
+	if err := m2.Resume(ctx, base.Add(30*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if !m2.HasOpenSession() {
+		t.Fatal("Resume must adopt the still-open session left behind by shutdown")
+	}
+	if m2.cur.uuid != firstUUID {
+		t.Errorf("Resume UUID = %s, want %s (same row)", m2.cur.uuid, firstUUID)
+	}
+	if m2.cur.totalDistanceM != 1000 {
+		t.Errorf("Resume distance = %g, want 1000", m2.cur.totalDistanceM)
+	}
+
+	// The belt is still running and its device counter is at 1010 m. The next
+	// running frame must add only the delta (10 m), not the full 1010 m.
+	if err := m2.Ingest(ctx, running(4.0, 1010, 1213), base.Add(31*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if m2.cur.totalDistanceM != 1010 {
+		t.Errorf("post-resume delta wrong: distance = %g, want 1010 (no double-count of belt counter)",
+			m2.cur.totalDistanceM)
+	}
+
+	// Still exactly one session row in the DB.
+	sessions, _ := st.ListSessions(ctx, 10, time.Time{})
+	if len(sessions) != 1 {
+		t.Fatalf("want 1 session, got %d", len(sessions))
+	}
+	if sessions[0].EndedAt.Valid {
+		t.Error("session row must still be open after restart-without-ForceClose")
+	}
+}
+
+// TestEnsureSession_NoResurrectOnEmptyStore: a first-ever running frame with
+// no history must open a fresh session, not error on the missing row.
+func TestEnsureSession_NoResurrectOnEmptyStore(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	m := newTestManager(t, st)
+
+	if err := m.Ingest(ctx, running(4.0, 0, 0), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if !m.HasOpenSession() {
+		t.Fatal("first running frame must open a session")
+	}
+	sessions, _ := st.ListSessions(ctx, 10, time.Time{})
+	if len(sessions) != 1 {
+		t.Fatalf("want 1 session, got %d", len(sessions))
+	}
+}
+
 // --- misc -------------------------------------------------------------------
 
 func TestManager_StoppingFrameCounted(t *testing.T) {
