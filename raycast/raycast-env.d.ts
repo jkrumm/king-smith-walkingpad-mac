@@ -12,8 +12,6 @@ type ExtensionPreferences = {
   "baseUrl": string,
   /** API Token - Bearer token for the daemon. Leave empty when running on loopback with auth disabled. */
   "apiToken": string,
-  /** Quick-Set Speeds - Comma-separated km/h presets shown in the menu bar and Set Speed grid */
-  "quickSpeeds": string,
   /** Speed Step - km/h increment for Speed Up / Speed Down actions */
   "speedStep": string
 }

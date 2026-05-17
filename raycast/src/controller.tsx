@@ -12,7 +12,7 @@ import {
   useNavigation,
 } from "@raycast/api";
 import { useCallback, useMemo } from "react";
-import { api, clampSpeed, quickSpeeds, speedStep } from "./lib/api";
+import { api, clampSpeed, SPEED_GRID, speedStep } from "./lib/api";
 import {
   formatDistance,
   formatDuration,
@@ -30,7 +30,6 @@ const REFRESH_MS = 1000;
 
 export default function Controller() {
   const { data, isLoading, revalidate, error } = useStatus(REFRESH_MS);
-  const presets = useMemo(() => quickSpeeds(), []);
   const step = useMemo(() => speedStep(), []);
 
   const runAction = useCallback(
@@ -115,11 +114,11 @@ export default function Controller() {
             <SetStartSpeedAction />
           </ActionPanel.Section>
 
-          <ActionPanel.Section title="Quick Set">
-            {presets.map((v, i) => (
+          <ActionPanel.Section title="Quick Set (km/h)">
+            {SPEED_GRID.map((v, i) => (
               <Action
                 key={v}
-                title={`${v.toFixed(1)} km/h`}
+                title={v.toFixed(1)}
                 icon={Icon.Gauge}
                 shortcut={quickShortcut(i)}
                 onAction={() => onSetSpeed(v)}
@@ -246,7 +245,6 @@ function renderMetadata(data: Status | undefined): React.ReactNode {
         <Detail.Metadata.TagList.Item text={sd.label} color={sd.color} />
       </Detail.Metadata.TagList>
       <Detail.Metadata.Label title="Speed" text={formatSpeed(data.speed_kmh)} />
-      <Detail.Metadata.Label title="Mode" text={data.mode ?? "—"} />
       <Detail.Metadata.Separator />
       <Detail.Metadata.Label
         title="Today distance"
@@ -263,12 +261,6 @@ function renderMetadata(data: Status | undefined): React.ReactNode {
       <Detail.Metadata.Label
         title="Today kcal"
         text={formatKcal(data.today.kcal)}
-      />
-      <Detail.Metadata.Separator />
-      <Detail.Metadata.Label title="Device" text={data.device.name || "—"} />
-      <Detail.Metadata.Label
-        title="RSSI"
-        text={data.device.rssi ? `${data.device.rssi} dBm` : "—"}
       />
     </Detail.Metadata>
   );

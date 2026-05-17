@@ -9,7 +9,7 @@ import {
 } from "@raycast/api";
 import { useCachedPromise } from "@raycast/utils";
 import { useMemo } from "react";
-import { api, clampSpeed, quickSpeeds, speedStep } from "./lib/api";
+import { api, clampSpeed, SPEED_GRID, speedStep } from "./lib/api";
 import {
   formatDistance,
   formatDurationLong,
@@ -28,11 +28,12 @@ export default function MenuBar() {
       keepPreviousData: true,
     },
   );
-  const presets = useMemo(() => quickSpeeds(), []);
   const step = useMemo(() => speedStep(), []);
 
-  const title = renderTitle(data);
-  const running = isRunning(data?.belt_state);
+  const known = data !== undefined;
+  const connected = !!data?.connected;
+  const running = known && isRunning(data?.belt_state);
+  const stopped = known && connected && !running;
 
   const fire = async (label: string, fn: () => Promise<unknown>) => {
     try {
@@ -52,13 +53,18 @@ export default function MenuBar() {
     if (running) {
       return fire(`Speed → ${v.toFixed(1)} km/h`, () => api.setSpeed(v));
     }
-    return fire(`Start at ${v.toFixed(1)} km/h`, () => api.start(v));
+    if (stopped) {
+      return fire(`Start at ${v.toFixed(1)} km/h`, () => api.start(v));
+    }
+    // State unknown — just attempt to set the speed; the daemon will reject
+    // if the belt isn't ready.
+    return fire(`Speed → ${v.toFixed(1)} km/h`, () => api.setSpeed(v));
   };
 
   return (
     <MenuBarExtra
       isLoading={isLoading}
-      title={title}
+      title={renderTitle(data)}
       tooltip={renderTooltip(data)}
     >
       <MenuBarExtra.Section title={statusLine(data)}>
@@ -80,45 +86,53 @@ export default function MenuBar() {
         />
       </MenuBarExtra.Section>
 
-      <MenuBarExtra.Section title="Belt">
-        {running ? (
+      {/* Start/Stop is gated on KNOWN state so we never offer Start while the
+          belt is actually running (or while we don't yet know). */}
+      {running && (
+        <MenuBarExtra.Section title="Belt">
           <MenuBarExtra.Item
             title="Stop"
             icon={Icon.Stop}
             onAction={() => fire("Stopped", () => api.stop())}
           />
-        ) : (
+          <MenuBarExtra.Item
+            title={`Speed +${step.toFixed(1)} km/h`}
+            icon={Icon.ArrowUp}
+            onAction={() =>
+              fire(`Speed +${step.toFixed(1)}`, () =>
+                api.setSpeed(clampSpeed((data?.speed_kmh ?? 1.0) + step)),
+              )
+            }
+          />
+          <MenuBarExtra.Item
+            title={`Speed −${step.toFixed(1)} km/h`}
+            icon={Icon.ArrowDown}
+            onAction={() =>
+              fire(`Speed −${step.toFixed(1)}`, () =>
+                api.setSpeed(clampSpeed((data?.speed_kmh ?? 1.0) - step)),
+              )
+            }
+          />
+        </MenuBarExtra.Section>
+      )}
+
+      {stopped && (
+        <MenuBarExtra.Section title="Belt">
           <MenuBarExtra.Item
             title="Start"
             icon={Icon.Play}
             onAction={() => fire("Started", () => api.start())}
           />
-        )}
-        <MenuBarExtra.Item
-          title={`Speed +${step.toFixed(1)} km/h`}
-          icon={Icon.ArrowUp}
-          onAction={() =>
-            fire(`Speed +${step.toFixed(1)}`, () =>
-              api.setSpeed(clampSpeed((data?.speed_kmh ?? 1.0) + step)),
-            )
-          }
-        />
-        <MenuBarExtra.Item
-          title={`Speed −${step.toFixed(1)} km/h`}
-          icon={Icon.ArrowDown}
-          onAction={() =>
-            fire(`Speed −${step.toFixed(1)}`, () =>
-              api.setSpeed(clampSpeed((data?.speed_kmh ?? 1.0) - step)),
-            )
-          }
-        />
-      </MenuBarExtra.Section>
+        </MenuBarExtra.Section>
+      )}
 
-      <MenuBarExtra.Section title={running ? "Set Speed" : "Start At"}>
-        {presets.map((v) => (
+      <MenuBarExtra.Section
+        title={running ? "Set Speed (km/h)" : "Start At (km/h)"}
+      >
+        {SPEED_GRID.map((v) => (
           <MenuBarExtra.Item
             key={v}
-            title={`${v.toFixed(1)} km/h`}
+            title={v.toFixed(1)}
             icon={Icon.Gauge}
             onAction={() => onPresetSpeed(v)}
           />

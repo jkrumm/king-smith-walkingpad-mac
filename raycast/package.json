@@ -65,14 +65,6 @@
       "default": ""
     },
     {
-      "name": "quickSpeeds",
-      "title": "Quick-Set Speeds",
-      "description": "Comma-separated km/h presets shown in the menu bar and Set Speed grid",
-      "type": "textfield",
-      "required": false,
-      "default": "2,3,4,5"
-    },
-    {
       "name": "speedStep",
       "title": "Speed Step",
       "description": "km/h increment for Speed Up / Speed Down actions",

@@ -12,9 +12,17 @@ import type {
 interface Prefs {
   baseUrl: string;
   apiToken: string;
-  quickSpeeds: string;
   speedStep: string;
 }
+
+// 0.5-step grid from 1.0 to 6.0 km/h — the canonical preset list shared by
+// every view that lets the user pick a concrete speed.
+export const SPEED_GRID: number[] = (() => {
+  const out: number[] = [];
+  for (let v = 1.0; v <= 6.0 + 1e-6; v += 0.5)
+    out.push(Math.round(v * 10) / 10);
+  return out;
+})();
 
 export function prefs(): Prefs {
   return getPreferenceValues<Prefs>();
@@ -28,16 +36,6 @@ export function baseUrl(): string {
 export function authHeaders(): Record<string, string> {
   const t = prefs().apiToken?.trim();
   return t ? { Authorization: `Bearer ${t}` } : {};
-}
-
-// quickSpeeds prefs string → number[], clamped to daemon's accepted range.
-export function quickSpeeds(): number[] {
-  const raw = prefs().quickSpeeds ?? "2,3,4,5";
-  return raw
-    .split(",")
-    .map((s) => Number(s.trim()))
-    .filter((n) => Number.isFinite(n) && n >= 0.5 && n <= 6.0)
-    .map((n) => Math.round(n * 10) / 10);
 }
 
 export function speedStep(): number {
@@ -90,7 +88,10 @@ export const api = {
   start: (speed_kmh?: number) =>
     request<OkResponse>("/start", {
       method: "POST",
-      body: JSON.stringify(speed_kmh ? { speed_kmh } : {}),
+      // The daemon's handler treats a missing body as "start, keep current
+      // default speed". Sending `{}` would decode to speed_kmh=0 and fail
+      // validation, so we must omit the body entirely when no speed is given.
+      body: speed_kmh ? JSON.stringify({ speed_kmh }) : undefined,
     }),
   stop: () => request<OkResponse>("/stop", { method: "POST" }),
   setSpeed: (speed_kmh: number) =>

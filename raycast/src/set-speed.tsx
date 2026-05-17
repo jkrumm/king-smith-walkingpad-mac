@@ -8,23 +8,15 @@ import {
   showHUD,
   showToast,
 } from "@raycast/api";
-import { useMemo, useState } from "react";
-import { api, clampSpeed, quickSpeeds } from "./lib/api";
+import { useState } from "react";
+import { api, clampSpeed, SPEED_GRID } from "./lib/api";
 import { useStatus } from "./lib/hooks";
 import { isRunning, stateDisplay } from "./lib/state";
 import { formatSpeed } from "./lib/format";
 
-const ALL_SPEEDS: number[] = (() => {
-  const out: number[] = [];
-  for (let v = 0.5; v <= 6.0 + 1e-6; v += 0.5)
-    out.push(Math.round(v * 10) / 10);
-  return out;
-})();
-
 export default function SetSpeed() {
   const { data } = useStatus(2000);
   const [search, setSearch] = useState("");
-  const presets = useMemo(() => quickSpeeds(), []);
 
   const parsed = Number(search.replace(",", "."));
   const free =
@@ -57,25 +49,12 @@ export default function SetSpeed() {
         )}
       </List.Section>
 
-      {presets.length > 0 && (
-        <List.Section title="Quick">
-          {presets.map((v) => (
-            <List.Item
-              key={`q-${v}`}
-              title={`${v.toFixed(1)} km/h`}
-              icon={Icon.Bolt}
-              actions={<SpeedActions value={v} running={running ?? false} />}
-            />
-          ))}
-        </List.Section>
-      )}
-
-      <List.Section title="All speeds">
-        {ALL_SPEEDS.map((v) => (
+      <List.Section title="Speeds (km/h)">
+        {SPEED_GRID.map((v) => (
           <List.Item
             key={`a-${v}`}
-            title={`${v.toFixed(1)} km/h`}
-            icon={Icon.CircleProgress}
+            title={v.toFixed(1)}
+            icon={Icon.Gauge}
             actions={<SpeedActions value={v} running={running ?? false} />}
           />
         ))}
