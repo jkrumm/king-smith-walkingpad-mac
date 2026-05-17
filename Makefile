@@ -49,13 +49,7 @@ up: ## rebuild daemon, deploy, reload, verify, start Raycast dev (the one comman
 	@printf "daemon live   : "
 	@curl -fs http://127.0.0.1:7706/health | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("version","?"))' 2>/dev/null || echo "(no /health response yet — agent may still be booting)"
 	@echo "---"
-	@if ! node -v 2>/dev/null | grep -q '^v22\.'; then \
-	  echo "node $$(node -v 2>/dev/null || echo missing) installed; raycast/.nvmrc pins 22.22.2."; \
-	  echo "run \`nvm install 22.22.2 && nvm use\` (or volta/mise) then re-run \`make up\`."; \
-	  echo "daemon is already deployed and live — only the Raycast dev loop is gated."; \
-	else \
-	  cd raycast && npm install && npm run dev; \
-	fi
+	@./scripts/raycast-dev.sh
 
 test: ## run all tests (Go race + Raycast typecheck)
 	go test -race -count=1 ./...
