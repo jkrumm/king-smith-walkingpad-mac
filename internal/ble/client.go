@@ -55,14 +55,33 @@ func Adapter() (*bluetooth.Adapter, error) {
 	return bluetooth.DefaultAdapter, nil
 }
 
-// Scan runs a discovery scan for the given timeout (or until ctx is cancelled),
-// returning every device that either advertised the WalkingPad service UUID or
-// whose LocalName matched a known prefix. Duplicates are collapsed by address;
-// the strongest seen RSSI is kept.
-//
-// Scan blocks until completion. The macOS CoreBluetooth scanner is global —
-// only one Scan can be active at a time on a process.
+// ScanOptions configures a Scan run.
+type ScanOptions struct {
+	// Timeout caps the scan duration. Required.
+	Timeout time.Duration
+	// All disables the WalkingPad service/name filter and returns every
+	// advertising device. Useful for diagnosing macOS BLE permission issues:
+	// an empty result with All=true almost certainly means CoreBluetooth
+	// denied access silently (no permission prompt was accepted).
+	All bool
+}
+
+// Scan runs a discovery scan with the WalkingPad filter applied. See ScanWith
+// for the full option set.
 func Scan(ctx context.Context, timeout time.Duration) ([]Discovered, error) {
+	return ScanWith(ctx, ScanOptions{Timeout: timeout})
+}
+
+// ScanWith runs a discovery scan with the supplied options. Returns every
+// matching device that was seen during the window. Duplicates are collapsed
+// by address; the strongest seen RSSI is kept.
+//
+// ScanWith blocks until completion. The macOS CoreBluetooth scanner is global —
+// only one Scan can be active at a time on a process.
+func ScanWith(ctx context.Context, opts ScanOptions) ([]Discovered, error) {
+	if opts.Timeout <= 0 {
+		return nil, errors.New("ble: scan timeout must be > 0")
+	}
 	adapter, err := Adapter()
 	if err != nil {
 		return nil, err
@@ -83,7 +102,7 @@ func Scan(ctx context.Context, timeout time.Duration) ([]Discovered, error) {
 	// Stop the scan when ctx is cancelled or the timeout fires, whichever comes first.
 	doneCh := make(chan struct{})
 	go func() {
-		timer := time.NewTimer(timeout)
+		timer := time.NewTimer(opts.Timeout)
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
@@ -98,7 +117,7 @@ func Scan(ctx context.Context, timeout time.Duration) ([]Discovered, error) {
 		hasService := r.HasServiceUUID(ServiceUUID)
 		name := r.LocalName()
 		nameMatch := matchesLocalName(name)
-		if !hasService && !nameMatch {
+		if !opts.All && !hasService && !nameMatch {
 			return
 		}
 

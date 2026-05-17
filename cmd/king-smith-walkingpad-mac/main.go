@@ -74,14 +74,19 @@ For BLE access on macOS, run from inside the .app bundle:
 func runScan(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
 	timeout := fs.Duration("timeout", 8*time.Second, "scan duration")
+	all := fs.Bool("all", false, "show every advertising BLE device (no filter); use to debug permission issues")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
-	fmt.Fprintf(os.Stderr, "scanning for %s …\n", *timeout)
+	label := "WalkingPad devices"
+	if *all {
+		label = "BLE devices (unfiltered)"
+	}
+	fmt.Fprintf(os.Stderr, "scanning %s for %s …\n", label, *timeout)
 	start := time.Now()
 
-	found, err := ble.Scan(ctx, *timeout)
+	found, err := ble.ScanWith(ctx, ble.ScanOptions{Timeout: *timeout, All: *all})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "scan failed: %v\n", err)
 		return 1
@@ -89,18 +94,33 @@ func runScan(ctx context.Context, args []string) int {
 
 	elapsed := time.Since(start).Round(10 * time.Millisecond)
 	if len(found) == 0 {
-		fmt.Fprintf(os.Stderr, `
+		if *all {
+			fmt.Fprintf(os.Stderr, `
+no BLE devices at all after %s.
+
+This almost always means CoreBluetooth denied access silently:
+  - The .app bundle is unsigned. Ad-hoc sign and re-grant:
+      codesign --force --deep --sign - /Applications/WalkingPad.app
+      xattr -cr /Applications/WalkingPad.app
+      tccutil reset Bluetooth com.jkrumm.walkingpad
+      open /Applications/WalkingPad.app   # accept the prompt
+  - Or: Bluetooth is off (System Settings → Bluetooth).
+  - Or: no advertising devices in range (very unlikely on a Mac).
+`, elapsed)
+		} else {
+			fmt.Fprintf(os.Stderr, `
 no WalkingPad devices found after %s.
 
-Common causes:
-  - You are running the bare binary instead of the .app bundle.
-    macOS silently denies CoreBluetooth without a bundled Info.plist.
-    Use: /Applications/WalkingPad.app/Contents/MacOS/walkingpad scan
-  - Bluetooth is off (System Settings → Bluetooth).
-  - The WalkingPad is off, asleep, or out of range.
-  - First-run permission prompt has not been accepted yet — check
-    System Settings → Privacy & Security → Bluetooth.
+To rule out a permission issue, run the unfiltered scan:
+  /Applications/WalkingPad.app/Contents/MacOS/walkingpad scan --all
+
+Other common causes:
+  - The WalkingPad is off, asleep, or out of range — step on it or
+    tap the remote to wake the radio.
+  - First-run Bluetooth permission was never granted: check
+    System Settings → Privacy & Security → Bluetooth for "WalkingPad".
 `, elapsed)
+		}
 		return 1
 	}
 

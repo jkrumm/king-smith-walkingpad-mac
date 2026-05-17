@@ -48,6 +48,20 @@ sed "s/__VERSION__/${VERSION//\//_}/g" "$PLIST_TMPL" > "$APP_DIR/Info.plist"
 # Copy the binary; preserve the executable bit. Use install to set 0755 explicitly.
 install -m 0755 "$BINARY" "$APP_DIR/MacOS/$BINARY_BASENAME"
 
+# Strip any quarantine xattrs that would block CoreBluetooth TCC. Safe to ignore
+# the exit code — if there are no xattrs there is nothing to strip.
+xattr -cr "$APP_PATH" 2>/dev/null || true
+
+# Ad-hoc sign the bundle. macOS Sequoia+ TCC matches Bluetooth permission against
+# the bundle's signature; an unsigned bundle's identity is fragile (rotates on
+# every cp -R) and TCC will silently deny scans even when the toggle is on in
+# System Settings. Ad-hoc signature (--sign -) is enough to give the bundle a
+# stable Designated Requirement on this machine; proper notarisation is a v2 item.
+if ! codesign --force --deep --sign - "$APP_PATH" 2>/tmp/codesign.err; then
+  echo "codesign failed (continuing — Bluetooth permission may not stick):" >&2
+  cat /tmp/codesign.err >&2
+fi
+
 # Touch the bundle so Launch Services notices the change next time it's opened.
 touch "$APP_PATH"
 
