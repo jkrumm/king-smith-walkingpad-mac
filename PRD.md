@@ -121,7 +121,7 @@ Reverse-engineered from `ph4r05/ph4-walkingpad`, cross-verified against `tim-ost
 | Start belt | `F7 A2 04 01 FF FD` | Begin walking in current mode. |
 | Beep/ack | `F7 A2 03 07 AC FD` | Sent after connect; purpose unconfirmed but ph4 always sends it. |
 | Set pref | `F7 A6 KEY STYPE V0 V1 V2 AC ?? FD` | 10 bytes. See pref keys below. |
-| Last record | `F7 A7 AA FF 50 FD` | Request last-run record. Consumed after two reads. |
+| Last record | `F7 A7 AA FF 50 FD` | Request last-run record. Device replies with a single type-0xA7 status frame (see `ph4r05/ph4-walkingpad` `WalkingPadLastStatus`). |
 
 **Pause** = `set speed 0`. No dedicated pause opcode. State machine tracks pause vs. stop client-side.
 

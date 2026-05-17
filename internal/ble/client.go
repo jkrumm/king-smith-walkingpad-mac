@@ -295,9 +295,11 @@ func discoverChars(device bluetooth.Device) (bluetooth.DeviceCharacteristic, blu
 
 func (c *Client) dispatch(buf []byte, onStatus StatusHandler, onErr ErrorHandler) {
 	if len(buf) < 2 || buf[0] != 0xF8 || buf[1] != typeStd {
-		// Non-status frames (e.g. last-record response, type 0xA7) end up here.
-		// Silently ignore for the POC; the session manager (Milestone 1) will
-		// route these later.
+		// Non-0xA2 frames end up here. The known case is the 0xA7 last-record
+		// response (see ph4r05/ph4-walkingpad pad.py WalkingPadLastStatus) —
+		// it carries time/distance/steps for the previous run and is
+		// triggered by EncodeLastRecord. Silently ignore for the POC; the
+		// session manager (Milestone 1) will route these.
 		return
 	}
 	s, err := DecodeStatus(buf)

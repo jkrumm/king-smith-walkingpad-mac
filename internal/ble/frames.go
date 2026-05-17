@@ -238,7 +238,11 @@ func EncodeStartBelt() []byte { return stdCmd(0x04, 0x01) }
 // but ph4 always sends it after connecting.
 func EncodeBeep() []byte { return stdCmd(0x03, 0x07) }
 
-// EncodeLastRecord requests the last-run record. Consumed after two reads.
+// EncodeLastRecord requests the last-run record. The device replies with a
+// type-0xA7 status frame (separate from the 0xA2 stream); see ph4r05's
+// WalkingPadLastStatus for the layout. The session manager (Milestone 1) is
+// the consumer — for the POC the response is silently dropped in
+// Client.dispatch.
 func EncodeLastRecord() []byte {
 	f := []byte{cmdStart, typeRecord, 0xAA, 0xFF, 0x00, frameEnd}
 	f[CmdFrameLen-2] = crc(f)
