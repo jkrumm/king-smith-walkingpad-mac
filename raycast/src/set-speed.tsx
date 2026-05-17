@@ -1,6 +1,7 @@
 import {
   Action,
   ActionPanel,
+  Color,
   Icon,
   List,
   Toast,
@@ -9,13 +10,18 @@ import {
   showToast,
 } from "@raycast/api";
 import { useState } from "react";
-import { api, clampSpeed, SPEED_GRID } from "./lib/api";
+import { api, clampSpeed, SPEED_GRID, speedStep } from "./lib/api";
 import { useStatus } from "./lib/hooks";
 import { isRunning, stateDisplay } from "./lib/state";
-import { formatSpeed } from "./lib/format";
+import {
+  formatDistance,
+  formatDuration,
+  formatSpeed,
+  formatStepsShort,
+} from "./lib/format";
 
 export default function SetSpeed() {
-  const { data } = useStatus(2000);
+  const { data, revalidate } = useStatus(2000);
   const [search, setSearch] = useState("");
 
   const parsed = Number(search.replace(",", "."));
@@ -25,12 +31,48 @@ export default function SetSpeed() {
       : null;
 
   const running = isRunning(data?.belt_state);
-  const sd = stateDisplay(data?.connected ?? false, data?.belt_state);
-  const header = data
-    ? data.connected
-      ? `${sd.label}${data.belt_state === "ACTIVE" ? ` · ${formatSpeed(data.speed_kmh)}` : ""}`
-      : "Disconnected"
-    : "Loading…";
+  const connected = !!data?.connected;
+  const currentSpeed = data?.speed_kmh ?? null;
+  const step = speedStep();
+
+  const sd = stateDisplay(connected, data?.belt_state);
+  const header = !data
+    ? "Loading…"
+    : !data.connected
+      ? "Disconnected — pad not in range"
+      : data.belt_state === "ACTIVE" && currentSpeed
+        ? `${sd.label} · ${formatSpeed(currentSpeed)}${
+            data.current_session
+              ? ` · ${formatDuration(data.current_session.duration_s)} · ${formatDistance(data.current_session.distance_m)} · ${formatStepsShort(data.current_session.steps)} steps`
+              : ""
+          }`
+        : sd.label;
+
+  // Hide the preset that exactly matches the typed custom value so we don't
+  // show it twice.
+  const presets = SPEED_GRID.filter((v) => v !== free);
+
+  const burst = () => {
+    revalidate();
+    setTimeout(revalidate, 400);
+    setTimeout(revalidate, 1200);
+    setTimeout(revalidate, 2500);
+  };
+
+  const runAction = async (label: string, fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+      burst();
+      await closeMainWindow();
+      await showHUD(`✓ ${label}`);
+    } catch (e) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: label,
+        message: (e as Error).message,
+      });
+    }
+  };
 
   return (
     <List
@@ -39,23 +81,94 @@ export default function SetSpeed() {
       searchText={search}
       onSearchTextChange={setSearch}
     >
-      <List.Section title={header}>
-        {free !== null && (
+      {/* Belt control — always visible whenever the daemon is reachable. */}
+      {(connected || !data) && (
+        <List.Section title={header}>
           <List.Item
-            title={`Set to ${free.toFixed(1)} km/h`}
-            icon={Icon.Gauge}
-            actions={<SpeedActions value={free} running={running ?? false} />}
+            title="Stop"
+            icon={{ source: Icon.Stop, tintColor: Color.Red }}
+            accessories={[{ tag: { value: "⌘.", color: Color.SecondaryText } }]}
+            actions={
+              <ActionPanel>
+                <Action
+                  title="Stop the Belt"
+                  icon={Icon.Stop}
+                  onAction={() => runAction("Stopped", () => api.stop())}
+                />
+              </ActionPanel>
+            }
           />
-        )}
-      </List.Section>
+          {currentSpeed !== null && (
+            <List.Item
+              title={`Speed up  →  ${clampSpeed(currentSpeed + step).toFixed(1)} km/h`}
+              icon={{ source: Icon.ArrowUp, tintColor: Color.Green }}
+              accessories={[
+                { tag: { value: `+${step.toFixed(1)}`, color: Color.Green } },
+                { tag: { value: "⌘=", color: Color.SecondaryText } },
+              ]}
+              actions={
+                <ActionPanel>
+                  <Action
+                    title={`Set Speed → ${clampSpeed(currentSpeed + step).toFixed(1)} km/h`}
+                    icon={Icon.ArrowUp}
+                    onAction={() =>
+                      runAction(
+                        `Speed → ${clampSpeed(currentSpeed + step).toFixed(1)} km/h`,
+                        () => api.setSpeed(clampSpeed(currentSpeed + step)),
+                      )
+                    }
+                  />
+                </ActionPanel>
+              }
+            />
+          )}
+          {currentSpeed !== null && (
+            <List.Item
+              title={`Speed down  →  ${clampSpeed(currentSpeed - step).toFixed(1)} km/h`}
+              icon={{ source: Icon.ArrowDown, tintColor: Color.Orange }}
+              accessories={[
+                { tag: { value: `−${step.toFixed(1)}`, color: Color.Orange } },
+                { tag: { value: "⌘-", color: Color.SecondaryText } },
+              ]}
+              actions={
+                <ActionPanel>
+                  <Action
+                    title={`Set Speed → ${clampSpeed(currentSpeed - step).toFixed(1)} km/h`}
+                    icon={Icon.ArrowDown}
+                    onAction={() =>
+                      runAction(
+                        `Speed → ${clampSpeed(currentSpeed - step).toFixed(1)} km/h`,
+                        () => api.setSpeed(clampSpeed(currentSpeed - step)),
+                      )
+                    }
+                  />
+                </ActionPanel>
+              }
+            />
+          )}
+        </List.Section>
+      )}
 
-      <List.Section title="Speeds (km/h)">
-        {SPEED_GRID.map((v) => (
-          <List.Item
-            key={`a-${v}`}
-            title={v.toFixed(1)}
-            icon={Icon.Gauge}
-            actions={<SpeedActions value={v} running={running ?? false} />}
+      {free !== null && (
+        <List.Section title="Custom">
+          <PresetItem
+            value={free}
+            currentSpeed={currentSpeed}
+            running={running}
+            runAction={runAction}
+            customLabel
+          />
+        </List.Section>
+      )}
+
+      <List.Section title={running ? "Set speed" : "Start at"}>
+        {presets.map((v) => (
+          <PresetItem
+            key={v}
+            value={v}
+            currentSpeed={currentSpeed}
+            running={running}
+            runAction={runAction}
           />
         ))}
       </List.Section>
@@ -63,12 +176,76 @@ export default function SetSpeed() {
   );
 }
 
-function SpeedActions({ value, running }: { value: number; running: boolean }) {
-  // The cached `running` flag drives the label so the user can see what the
-  // click *will* do. The actual action re-fetches live status, because if the
-  // cache is stale (e.g. the user just started walking) firing /start on a
-  // running belt would halt it. The daemon also short-circuits this, but
-  // doing it here means the toast wording is honest.
+function PresetItem({
+  value,
+  currentSpeed,
+  running,
+  runAction,
+  customLabel,
+}: {
+  value: number;
+  currentSpeed: number | null;
+  running: boolean;
+  runAction: (label: string, fn: () => Promise<unknown>) => Promise<void>;
+  customLabel?: boolean;
+}) {
+  const isCurrent =
+    running && currentSpeed !== null && Math.abs(currentSpeed - value) < 0.05;
+  const delta =
+    currentSpeed !== null && currentSpeed > 0
+      ? Math.round((value - currentSpeed) * 10) / 10
+      : null;
+
+  const accessories: List.Item.Accessory[] = [];
+  if (isCurrent) {
+    accessories.push({
+      tag: { value: "current", color: Color.Green },
+      icon: { source: Icon.CircleFilled, tintColor: Color.Green },
+    });
+  } else if (delta !== null && delta !== 0) {
+    accessories.push({
+      tag: {
+        value: `${delta > 0 ? "+" : ""}${delta.toFixed(1)}`,
+        color: delta > 0 ? Color.Blue : Color.Orange,
+      },
+    });
+  }
+
+  const title = customLabel
+    ? `Custom — ${value.toFixed(1)} km/h`
+    : `${value.toFixed(1)} km/h`;
+
+  return (
+    <List.Item
+      title={title}
+      icon={{
+        source: isCurrent ? Icon.CircleFilled : Icon.Gauge,
+        tintColor: isCurrent
+          ? Color.Green
+          : delta !== null && delta > 0
+            ? Color.Blue
+            : Color.SecondaryText,
+      }}
+      accessories={accessories}
+      actions={
+        <SpeedActions value={value} running={running} runAction={runAction} />
+      }
+    />
+  );
+}
+
+function SpeedActions({
+  value,
+  running,
+  runAction,
+}: {
+  value: number;
+  running: boolean;
+  runAction: (label: string, fn: () => Promise<unknown>) => Promise<void>;
+}) {
+  // Cached `running` picks the primary label so the user sees what *will*
+  // happen; the action re-fetches live status before deciding the actual
+  // call, in case the cache is stale.
   const primaryTitle = running
     ? `Set Speed → ${value.toFixed(1)} km/h`
     : `Start at ${value.toFixed(1)} km/h`;
@@ -86,21 +263,18 @@ function SpeedActions({ value, running }: { value: number; running: boolean }) {
             // network blip — fall back to the prop.
           }
           const liveTitle = isLive
-            ? `Set Speed → ${value.toFixed(1)} km/h`
+            ? `Speed → ${value.toFixed(1)} km/h`
             : `Start at ${value.toFixed(1)} km/h`;
-          try {
-            if (isLive) await api.setSpeed(value);
-            else await api.start(value);
-            await closeMainWindow();
-            await showHUD(`✓ ${liveTitle}`);
-          } catch (e) {
-            await showToast({
-              style: Toast.Style.Failure,
-              title: liveTitle,
-              message: (e as Error).message,
-            });
-          }
+          await runAction(liveTitle, () =>
+            isLive ? api.setSpeed(value) : api.start(value),
+          );
         }}
+      />
+      <Action
+        title="Stop the Belt"
+        icon={{ source: Icon.Stop, tintColor: Color.Red }}
+        shortcut={{ modifiers: ["cmd"], key: "." }}
+        onAction={() => runAction("Stopped", () => api.stop())}
       />
       <Action
         title={`Save as Default Start Speed (${value.toFixed(1)} km/h)`}
