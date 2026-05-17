@@ -65,6 +65,17 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, version strin
 		}
 	}()
 
+	// One-shot: recompute duration_s for pre-window-logic sessions and clear
+	// their synced_at so Argo gets the corrected row on the next upload tick.
+	// Marker in daemon_meta makes this a no-op on subsequent startups.
+	backfillCtx, backfillCancel := context.WithTimeout(ctx, 30*time.Second)
+	if n, err := st.BackfillDurations(backfillCtx); err != nil {
+		log.Warn("backfill.durations_failed", "err", err)
+	} else if n > 0 {
+		log.Info("backfill.durations_done", "sessions_updated", n)
+	}
+	backfillCancel()
+
 	// --- session manager --------------------------------------------------
 	mgr := session.NewManager(session.Config{
 		GapMinutes:          cfg.Session.GapMinutes,

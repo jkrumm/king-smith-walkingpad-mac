@@ -27,13 +27,20 @@ func TestOpen_MigratesAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first open: %v", err)
 	}
-	// schema_migrations must record version 1.
+	// schema_migrations must have applied every embedded migration. Tracks
+	// the latest version dynamically so adding a new file doesn't require
+	// touching this assertion.
 	var v int
 	if err := s1.DB().QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&v); err != nil {
 		t.Fatalf("read schema_migrations: %v", err)
 	}
-	if v != 1 {
-		t.Errorf("schema version = %d, want 1", v)
+	migs, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("loadMigrations: %v", err)
+	}
+	want := migs[len(migs)-1].version
+	if v != want {
+		t.Errorf("schema version = %d, want %d", v, want)
 	}
 	_ = s1.Close()
 
@@ -48,8 +55,8 @@ func TestOpen_MigratesAndIsIdempotent(t *testing.T) {
 	if err := s2.DB().QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count rows: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("schema_migrations rows = %d, want 1 (idempotent)", count)
+	if count != len(migs) {
+		t.Errorf("schema_migrations rows = %d, want %d (idempotent)", count, len(migs))
 	}
 }
 
