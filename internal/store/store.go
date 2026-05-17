@@ -362,6 +362,26 @@ func (s *Store) samplesFor(ctx context.Context, sessionID int64) ([]Sample, erro
 	return out, rows.Err()
 }
 
+// LastSampleTime returns the timestamp of the most recent sample for the given
+// session. The boolean is false when the session has no samples yet.
+func (s *Store) LastSampleTime(ctx context.Context, sessionID int64) (time.Time, bool, error) {
+	var tsStr sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT MAX(ts) FROM samples WHERE session_id = ?`, sessionID,
+	).Scan(&tsStr)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("last sample time: %w", err)
+	}
+	if !tsStr.Valid {
+		return time.Time{}, false, nil
+	}
+	t, err := parseTime(tsStr.String)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return t, true, nil
+}
+
 // --- Aggregations -----------------------------------------------------------
 
 // Summary computes totals over the given window. "today/week/month" use local
