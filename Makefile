@@ -63,11 +63,10 @@ install: build-app ## build .app, copy to /Applications, install LaunchAgent
 
 install-agent: ## install the LaunchAgent plist and load it
 	@test -f $(PLIST_TMPL) || (echo "missing $(PLIST_TMPL) — generate it first" && exit 1)
+	@test -x ./scripts/install-launch-agent.sh || (echo "missing ./scripts/install-launch-agent.sh" && exit 1)
 	@mkdir -p "$(DATA_DIR)"
 	@mkdir -p "$(HOME)/Library/LaunchAgents"
-	@# Substitute __HOME__ — launchd does not inherit the user's $HOME, and the
-	@# daemon's config loader uses it to resolve the data dir.
-	sed "s|__HOME__|$(HOME)|g" $(PLIST_TMPL) > $(PLIST_DST)
+	./scripts/install-launch-agent.sh $(PLIST_TMPL) $(PLIST_DST)
 	launchctl unload $(PLIST_DST) 2>/dev/null || true
 	launchctl load -w $(PLIST_DST)
 	@echo "LaunchAgent loaded: $(PLIST_LABEL)"

@@ -28,6 +28,7 @@ import (
 	"github.com/jkrumm/king-smith-walkingpad-mac/internal/config"
 	"github.com/jkrumm/king-smith-walkingpad-mac/internal/session"
 	"github.com/jkrumm/king-smith-walkingpad-mac/internal/store"
+	syncpkg "github.com/jkrumm/king-smith-walkingpad-mac/internal/sync"
 )
 
 // tickInterval is how often the manager re-evaluates the idle-gap close.
@@ -110,6 +111,23 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, version strin
 
 	ctrl := newController(link)
 
+	// --- Argo sync worker (optional) -------------------------------------
+	// Only constructed when both URL and token are configured. Without it,
+	// the API returns 503 on POST /sync/argo via NopSyncer; everything else
+	// still works.
+	var syncer api.Syncer = api.NopSyncer{}
+	var syncWorker *syncpkg.Worker
+	if cfg.SyncEnabled() {
+		syncWorker = syncpkg.NewWorker(syncpkg.Config{
+			BaseURL:   cfg.Argo.URL,
+			Token:     cfg.Argo.Token,
+			UserAgent: "king-smith-walkingpad-mac/" + version,
+		}, st, log)
+		syncer = syncWorker
+	} else {
+		log.Info("sync.disabled", "reason", "no argo.token set")
+	}
+
 	// --- HTTP API ---------------------------------------------------------
 	apiSrv := api.New(api.Config{
 		Addr:    "127.0.0.1:" + strconv.Itoa(cfg.Daemon.HTTPPort),
@@ -120,7 +138,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, version strin
 		Manager:    mgr,
 		Controller: ctrl,
 		Status:     statusProv,
-		Syncer:     api.NopSyncer{}, // step 9 wires the real Argo worker.
+		Syncer:     syncer,
 		Logger:     log.With("component", "api"),
 	})
 
@@ -164,6 +182,9 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, version strin
 	spawn("ble", func() error { return link.Run(runCtx) })
 	spawn("api", func() error { return apiSrv.ListenAndServe(runCtx) })
 	spawn("tick", func() error { return runTickLoop(runCtx, mgr, log) })
+	if syncWorker != nil {
+		spawn("sync", func() error { return syncWorker.Run(runCtx) })
+	}
 
 	wg.Wait()
 
