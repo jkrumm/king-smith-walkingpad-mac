@@ -64,20 +64,24 @@ export function gauge(opts: GaugeOpts): string {
     y: cy - rr * Math.sin(a),
   });
 
-  // Splits the requested arc into segments through the top (12 o'clock) so
-  // SVG never sees an exact-180° arc — that case is degenerate (both halves
-  // valid) and Raycast's renderer picks the lower half. Going via
-  // (cx, cy - r) is unambiguous. sweep=0 = counter-clockwise visually,
-  // which for our left→right gauge means the upper arc.
+  // Single-arc path. Exact 180° arcs are degenerate (both upper and lower
+  // halves satisfy the constraints) and Raycast's renderer picks the lower
+  // one, so we nudge each endpoint by a tiny epsilon to make the arc
+  // ~179.89° — visually identical at our stroke width but unambiguous, so
+  // sweep=0 always renders the intended upper arc.
+  const epsilon = 0.001;
+  const nudge = (a: number): number => {
+    if (Math.abs(a - 0) < epsilon) return epsilon;
+    if (Math.abs(a - Math.PI) < epsilon) return Math.PI - epsilon;
+    return a;
+  };
   const arcPath = (a0: number, a1: number, rr: number): string => {
-    const top = pt(Math.PI / 2, rr);
-    const s = pt(a0, rr);
-    const e = pt(a1, rr);
-    if (a0 > Math.PI / 2 && a1 < Math.PI / 2) {
-      // Crosses the top — emit two segments so neither is 180°.
-      return `M ${s.x.toFixed(2)} ${s.y.toFixed(2)} A ${rr} ${rr} 0 0 0 ${top.x.toFixed(2)} ${top.y.toFixed(2)} A ${rr} ${rr} 0 0 0 ${e.x.toFixed(2)} ${e.y.toFixed(2)}`;
-    }
-    return `M ${s.x.toFixed(2)} ${s.y.toFixed(2)} A ${rr} ${rr} 0 0 0 ${e.x.toFixed(2)} ${e.y.toFixed(2)}`;
+    const ax = nudge(a0);
+    const bx = nudge(a1);
+    const s = pt(ax, rr);
+    const e = pt(bx, rr);
+    const large = Math.abs(ax - bx) > Math.PI ? 1 : 0;
+    return `M ${s.x.toFixed(2)} ${s.y.toFixed(2)} A ${rr} ${rr} 0 ${large} 0 ${e.x.toFixed(2)} ${e.y.toFixed(2)}`;
   };
 
   // Walking-pace colour ramp: green for everything ≤ 4 km/h (most walking),
