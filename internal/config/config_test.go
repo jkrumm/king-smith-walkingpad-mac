@@ -139,7 +139,7 @@ token = "Bearer abc"
 	want := Config{
 		Device:  Device{Address: "AA-BB-CC"},
 		Daemon:  Daemon{HTTPPort: 8000, HTTPToken: "secret", PollIntervalMs: 1500, LogLevel: "debug"},
-		Session: Session{GapMinutes: 30, ResumeWithinSeconds: 90},
+		Session: Session{GapMinutes: 30, ResumeWithinSeconds: 90, MinDurationSeconds: 300},
 		Body:    Body{WeightKg: 72.5},
 		Argo:    Argo{URL: "https://argo.example.com/api", Token: "Bearer abc"},
 	}

@@ -41,6 +41,13 @@ import (
 // 15-min default gap.
 const tickInterval = 10 * time.Second
 
+// dropInterval is how often the runtime sweep drops short standalone
+// sessions whose resurrection window has expired. Once a minute is the
+// finest cadence that matters — eligibility is bounded by ended_at +
+// ResurrectionWindow, so a row lives at most dropInterval past its
+// eligibility before being collected.
+const dropInterval = 1 * time.Minute
+
 // Run brings the daemon up and blocks until ctx is cancelled or a subsystem
 // fails. Returns nil on clean shutdown.
 func Run(ctx context.Context, cfg config.Config, log *slog.Logger, version string) error {
@@ -82,13 +89,29 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, version strin
 	// Uses the same resurrection window as the live manager so historical
 	// data ends up consistent with the new grouping rule.
 	stitchCtx, stitchCancel := context.WithTimeout(ctx, 30*time.Second)
-	stitchWindow := session.ResurrectionWindow(cfg.Session.GapMinutes)
-	if n, err := st.StitchAdjacentSessions(stitchCtx, stitchWindow); err != nil {
+	resurrectWindow := session.ResurrectionWindow(cfg.Session.GapMinutes)
+	if n, err := st.StitchAdjacentSessions(stitchCtx, resurrectWindow); err != nil {
 		log.Warn("stitch.adjacent_failed", "err", err)
 	} else if n > 0 {
-		log.Info("stitch.adjacent_done", "sessions_merged", n, "window_min", stitchWindow.Minutes())
+		log.Info("stitch.adjacent_done", "sessions_merged", n, "window_min", resurrectWindow.Minutes())
 	}
 	stitchCancel()
+
+	// Startup sweep: drop short standalone sessions that can no longer be
+	// stitched (ended_at + resurrectWindow already past). Same sweep runs
+	// periodically below — running it once at startup catches anything that
+	// accumulated while the daemon was off.
+	minDur := time.Duration(cfg.Session.MinDurationSeconds) * time.Second
+	if minDur > 0 {
+		dropCtx, dropCancel := context.WithTimeout(ctx, 30*time.Second)
+		dropped, err := st.DropShortStandaloneSessions(dropCtx, minDur, resurrectWindow, time.Now().UTC())
+		dropCancel()
+		if err != nil {
+			log.Warn("drop_short.startup_failed", "err", err)
+		} else if len(dropped) > 0 {
+			log.Info("drop_short.startup_done", "sessions_dropped", len(dropped))
+		}
+	}
 
 	// --- session manager --------------------------------------------------
 	mgr := session.NewManager(session.Config{
@@ -213,6 +236,11 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, version strin
 	spawn("ble", func() error { return link.Run(runCtx) })
 	spawn("api", func() error { return apiSrv.ListenAndServe(runCtx) })
 	spawn("tick", func() error { return runTickLoop(runCtx, mgr, log) })
+	if minDur := time.Duration(cfg.Session.MinDurationSeconds) * time.Second; minDur > 0 {
+		spawn("drop", func() error {
+			return runDropLoop(runCtx, st, minDur, resurrectWindow, log)
+		})
+	}
 	if syncWorker != nil {
 		spawn("sync", func() error { return syncWorker.Run(runCtx) })
 	}
@@ -242,6 +270,30 @@ func runTickLoop(ctx context.Context, mgr *session.Manager, log *slog.Logger) er
 		case <-t.C:
 			if err := mgr.Tick(ctx, time.Now().UTC()); err != nil {
 				log.Error("session.tick", "err", err)
+			}
+		}
+	}
+}
+
+// runDropLoop periodically drops short standalone sessions whose
+// resurrection window has expired. Lives in its own goroutine so a slow
+// SQLite query (millions of rows in theory) can't stall the manager tick.
+// Always returns nil — errors are logged in place.
+func runDropLoop(ctx context.Context, st *store.Store, minDur, resurrectWindow time.Duration, log *slog.Logger) error {
+	t := time.NewTicker(dropInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+			dropped, err := st.DropShortStandaloneSessions(ctx, minDur, resurrectWindow, time.Now().UTC())
+			if err != nil {
+				log.Warn("drop_short.tick_failed", "err", err)
+				continue
+			}
+			if len(dropped) > 0 {
+				log.Info("drop_short.tick_done", "sessions_dropped", len(dropped))
 			}
 		}
 	}

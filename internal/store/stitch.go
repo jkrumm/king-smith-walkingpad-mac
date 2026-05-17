@@ -32,9 +32,10 @@ const stitchAdjacentKey = "stitch_adjacent_v1"
 // Idempotent: a row in daemon_meta records that the cleanup ran. To re-run
 // after a future logic change, bump stitchAdjacentKey.
 //
-// Argo caveat: this method does NOT call Argo. The merged-away session
-// UUIDs remain on Argo until a delete endpoint exists. The merged survivor
-// gets pushed correctly via the existing idempotent upsert.
+// Argo upstream: each merged-away UUID gets a session_tombstones row in
+// the same tx as the local DELETE. The sync worker drains tombstones via
+// DELETE /walking-pad/sessions/:uuid so Argo ends up consistent with the
+// local truth.
 //
 // Returns the number of sessions merged-away (i.e. deleted).
 func (s *Store) StitchAdjacentSessions(ctx context.Context, window time.Duration) (int, error) {
@@ -99,6 +100,14 @@ func (s *Store) mergeInto(ctx context.Context, a, b Session) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, b.ID); err != nil {
 		rollback()
 		return fmt.Errorf("delete b: %w", err)
+	}
+	// Queue B for upstream delete on Argo. Only meaningful when B was already
+	// synced (otherwise Argo never saw it), but writing unconditionally keeps
+	// the contract simple: every local delete leaves a tombstone, the worker
+	// gets a 200/deleted=false back when the upstream row never existed.
+	if err := writeTombstone(ctx, tx, b.UUID, time.Now().UTC()); err != nil {
+		rollback()
+		return err
 	}
 
 	// Aggregate totals on a. Distance/steps/kcal are simple sums; max_speed

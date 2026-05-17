@@ -73,6 +73,8 @@ func (c *Config) withDefaults() {
 type storeAPI interface {
 	UnsyncedSessions(ctx context.Context, limit int) ([]store.Session, error)
 	MarkSynced(ctx context.Context, uuid string, syncedAt time.Time) error
+	UnsyncedTombstones(ctx context.Context, limit int) ([]store.Tombstone, error)
+	MarkTombstoneSynced(ctx context.Context, uuid string, syncedAt time.Time) error
 }
 
 // Worker owns the upload loop. Instantiate one per process; safe for
@@ -139,6 +141,17 @@ func (w *Worker) flushOnce(ctx context.Context) {
 }
 
 func (w *Worker) flush(ctx context.Context) (int, int, error) {
+	synced, failed, firstErr := w.flushSessions(ctx)
+	tSynced, tFailed, tombErr := w.flushTombstones(ctx)
+	synced += tSynced
+	failed += tFailed
+	if firstErr == nil {
+		firstErr = tombErr
+	}
+	return synced, failed, firstErr
+}
+
+func (w *Worker) flushSessions(ctx context.Context) (int, int, error) {
 	pending, err := w.st.UnsyncedSessions(ctx, w.cfg.BatchSize)
 	if err != nil {
 		return 0, 0, fmt.Errorf("list unsynced: %w", err)
@@ -174,6 +187,48 @@ func (w *Worker) flush(ctx context.Context) (int, int, error) {
 		}
 		synced++
 		w.log.Info("sync.session_uploaded", "uuid", sess.UUID)
+	}
+	return synced, failed, firstErr
+}
+
+// flushTombstones drains pending deletes through Argo. The argo endpoint
+// returns 200 whether or not the row existed, so retries are free and a
+// tombstone for a UUID Argo never saw still resolves cleanly. Errors come
+// from network / 5xx only.
+func (w *Worker) flushTombstones(ctx context.Context) (int, int, error) {
+	pending, err := w.st.UnsyncedTombstones(ctx, w.cfg.BatchSize)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list unsynced tombstones: %w", err)
+	}
+	if len(pending) == 0 {
+		return 0, 0, nil
+	}
+
+	var synced, failed int
+	var firstErr error
+	for _, tomb := range pending {
+		if ctx.Err() != nil {
+			break
+		}
+		if err := w.deleteUpstream(ctx, tomb.UUID); err != nil {
+			failed++
+			w.log.Warn("sync.tombstone_failed", "uuid", tomb.UUID, "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if err := w.st.MarkTombstoneSynced(ctx, tomb.UUID, time.Now().UTC()); err != nil {
+			// Same idempotency story as session uploads — next tick retries.
+			failed++
+			w.log.Warn("sync.tombstone_mark_failed", "uuid", tomb.UUID, "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		synced++
+		w.log.Info("sync.tombstone_deleted", "uuid", tomb.UUID)
 	}
 	return synced, failed, firstErr
 }
@@ -224,6 +279,32 @@ func (w *Worker) upload(ctx context.Context, sess store.Session) error {
 		return nil
 	}
 	// Read up to a kilobyte for diagnostics.
+	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	return fmt.Errorf("argo %s: %s", resp.Status, strings.TrimSpace(string(snippet)))
+}
+
+// deleteUpstream issues DELETE /walking-pad/sessions/:uuid. Argo is
+// idempotent — both "deleted" and "no such uuid" return 200 — so any 2xx
+// from the server is success.
+func (w *Worker) deleteUpstream(ctx context.Context, uuid string) error {
+	url := strings.TrimRight(w.cfg.BaseURL, "/") + "/walking-pad/sessions/" + uuid
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+w.cfg.Token)
+	req.Header.Set("User-Agent", w.cfg.UserAgent)
+
+	resp, err := w.cfg.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("http: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	}
 	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	return fmt.Errorf("argo %s: %s", resp.Status, strings.TrimSpace(string(snippet)))
 }

@@ -41,6 +41,12 @@ type Daemon struct {
 type Session struct {
 	GapMinutes          int `toml:"gap_minutes"`
 	ResumeWithinSeconds int `toml:"resume_within_seconds"`
+	// MinDurationSeconds is the floor below which a standalone closed session
+	// is discarded as accidental noise (tapping start by mistake, a 30-second
+	// belt twitch, etc.). The drop only fires once the resurrection window
+	// has passed, so a short session that ends up being merged into a longer
+	// one is never lost. Set to 0 to disable the drop pass entirely.
+	MinDurationSeconds int `toml:"min_duration_seconds"`
 }
 
 // Body holds user metrics needed for client-side calorie computation.
@@ -67,6 +73,7 @@ func Default() Config {
 		Session: Session{
 			GapMinutes:          15,
 			ResumeWithinSeconds: 60,
+			MinDurationSeconds:  300,
 		},
 		Body: Body{
 			WeightKg: 80.0,
@@ -99,6 +106,9 @@ func (c Config) Validate() error {
 	}
 	if c.Session.ResumeWithinSeconds < 1 {
 		return fmt.Errorf("session.resume_within_seconds must be >= 1: %d", c.Session.ResumeWithinSeconds)
+	}
+	if c.Session.MinDurationSeconds < 0 {
+		return fmt.Errorf("session.min_duration_seconds must be >= 0 (0 disables drop): %d", c.Session.MinDurationSeconds)
 	}
 	if c.Body.WeightKg <= 0 {
 		return fmt.Errorf("body.weight_kg must be > 0: %g", c.Body.WeightKg)

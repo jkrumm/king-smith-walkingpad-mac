@@ -131,6 +131,16 @@ func TestStitchAdjacentSessions_MergesPair(t *testing.T) {
 			t.Errorf("orphan sample on session %d, want %d", smp.SessionID, aID)
 		}
 	}
+
+	// Stitch must leave a tombstone for the absorbed UUID so the sync worker
+	// drains the upstream Argo row.
+	has, err := s.HasTombstone(ctx, "session-b")
+	if err != nil {
+		t.Fatalf("HasTombstone: %v", err)
+	}
+	if !has {
+		t.Error("absorbed session must leave a tombstone for upstream delete")
+	}
 }
 
 func TestStitchAdjacentSessions_LeavesDistantPairsAlone(t *testing.T) {

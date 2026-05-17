@@ -18,16 +18,25 @@ import (
 // --- fakeStore --------------------------------------------------------------
 
 type fakeStore struct {
-	mu        sync.Mutex
-	pending   []store.Session
-	marked    map[string]time.Time
-	listErr   error
-	markErr   error
-	listCalls atomic.Int32
+	mu                 sync.Mutex
+	pending            []store.Session
+	marked             map[string]time.Time
+	pendingTombstones  []store.Tombstone
+	markedTombstones   map[string]time.Time
+	listErr            error
+	markErr            error
+	listTombErr        error
+	markTombErr        error
+	listCalls          atomic.Int32
+	listTombstoneCalls atomic.Int32
 }
 
 func newFakeStore(sessions ...store.Session) *fakeStore {
-	return &fakeStore{pending: sessions, marked: map[string]time.Time{}}
+	return &fakeStore{
+		pending:          sessions,
+		marked:           map[string]time.Time{},
+		markedTombstones: map[string]time.Time{},
+	}
 }
 
 func (f *fakeStore) UnsyncedSessions(_ context.Context, limit int) ([]store.Session, error) {
@@ -62,10 +71,56 @@ func (f *fakeStore) MarkSynced(_ context.Context, uuid string, syncedAt time.Tim
 	return nil
 }
 
+func (f *fakeStore) UnsyncedTombstones(_ context.Context, limit int) ([]store.Tombstone, error) {
+	f.listTombstoneCalls.Add(1)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listTombErr != nil {
+		return nil, f.listTombErr
+	}
+	if limit > len(f.pendingTombstones) {
+		limit = len(f.pendingTombstones)
+	}
+	out := append([]store.Tombstone(nil), f.pendingTombstones[:limit]...)
+	return out, nil
+}
+
+func (f *fakeStore) MarkTombstoneSynced(_ context.Context, uuid string, syncedAt time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.markTombErr != nil {
+		return f.markTombErr
+	}
+	f.markedTombstones[uuid] = syncedAt
+	kept := f.pendingTombstones[:0]
+	for _, t := range f.pendingTombstones {
+		if t.UUID != uuid {
+			kept = append(kept, t)
+		}
+	}
+	f.pendingTombstones = kept
+	return nil
+}
+
 func (f *fakeStore) markedCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.marked)
+}
+
+func (f *fakeStore) markedTombstoneCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.markedTombstones)
+}
+
+func (f *fakeStore) queueTombstone(uuid string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pendingTombstones = append(f.pendingTombstones, store.Tombstone{
+		UUID:      uuid,
+		DeletedAt: time.Now().UTC(),
+	})
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -322,5 +377,104 @@ func TestWorker_Upload_BaseURLTrailingSlash(t *testing.T) {
 	worker.cfg.BaseURL = srv.URL + "/"
 	if _, _, err := worker.SyncNow(context.Background()); err != nil {
 		t.Errorf("SyncNow err: %v", err)
+	}
+}
+
+// --- tombstone flush --------------------------------------------------------
+
+func TestWorker_SyncNow_DrainsTombstonesViaDelete(t *testing.T) {
+	st := newFakeStore()
+	st.queueTombstone("gone-1")
+	st.queueTombstone("gone-2")
+
+	var deleteCalls atomic.Int32
+	var sawToken atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("method = %s, want DELETE", r.Method)
+		}
+		if want := "/walking-pad/sessions/"; len(r.URL.Path) <= len(want) || r.URL.Path[:len(want)] != want {
+			t.Errorf("path = %q, want /walking-pad/sessions/...", r.URL.Path)
+		}
+		sawToken.Store(r.Header.Get("Authorization"))
+		deleteCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	worker := newWorker(t, st, srv)
+	synced, failed, err := worker.SyncNow(context.Background())
+	if err != nil {
+		t.Fatalf("SyncNow err: %v", err)
+	}
+	if synced != 2 || failed != 0 {
+		t.Errorf("counts: synced=%d failed=%d, want 2/0", synced, failed)
+	}
+	if got := deleteCalls.Load(); got != 2 {
+		t.Errorf("DELETE calls = %d, want 2", got)
+	}
+	if got := sawToken.Load(); got != "Bearer test-token" {
+		t.Errorf("auth header = %q, want Bearer test-token", got)
+	}
+	if st.markedTombstoneCount() != 2 {
+		t.Errorf("marked tombstones = %d, want 2", st.markedTombstoneCount())
+	}
+}
+
+func TestWorker_SyncNow_TombstoneDelete5xxLeavesPending(t *testing.T) {
+	st := newFakeStore()
+	st.queueTombstone("flaky")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	worker := newWorker(t, st, srv)
+	_, failed, err := worker.SyncNow(context.Background())
+	if err == nil {
+		t.Error("expected error on 5xx for tombstone")
+	}
+	if failed != 1 {
+		t.Errorf("failed=%d, want 1", failed)
+	}
+	if st.markedTombstoneCount() != 0 {
+		t.Error("must not mark tombstone synced on 5xx")
+	}
+}
+
+func TestWorker_SyncNow_TombstonesAndSessionsInSameFlush(t *testing.T) {
+	// One session to upload + one tombstone to delete in the same SyncNow call.
+	st := newFakeStore(sampleSession("uploads"))
+	st.queueTombstone("deletes")
+
+	var posts, deletes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			posts.Add(1)
+			w.WriteHeader(http.StatusCreated)
+		case http.MethodDelete:
+			deletes.Add(1)
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}))
+	defer srv.Close()
+
+	worker := newWorker(t, st, srv)
+	synced, failed, err := worker.SyncNow(context.Background())
+	if err != nil {
+		t.Fatalf("SyncNow err: %v", err)
+	}
+	if synced != 2 || failed != 0 {
+		t.Errorf("counts: synced=%d failed=%d, want 2/0", synced, failed)
+	}
+	if posts.Load() != 1 || deletes.Load() != 1 {
+		t.Errorf("posts=%d deletes=%d, want 1/1", posts.Load(), deletes.Load())
+	}
+	if st.markedCount() != 1 || st.markedTombstoneCount() != 1 {
+		t.Errorf("marks: sessions=%d tombs=%d, want 1/1", st.markedCount(), st.markedTombstoneCount())
 	}
 }
