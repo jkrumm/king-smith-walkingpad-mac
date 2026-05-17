@@ -80,6 +80,22 @@ reload: ## kickstart the LaunchAgent (faster than unload/load)
 	launchctl kickstart -k gui/$$(id -u)/$(PLIST_LABEL)
 	@echo "kickstarted $(PLIST_LABEL)"
 
+redeploy: build-app ## rebuild .app + replace /Applications/WalkingPad.app + reload agent (the safest "push my latest daemon code" command)
+	rm -rf $(APP_INSTALL)
+	cp -R $(APP_BUNDLE) $(APP_INSTALL)
+	@echo "replaced $(APP_INSTALL)"
+	launchctl kickstart -k gui/$$(id -u)/$(PLIST_LABEL)
+	@sleep 1
+	@echo "---"
+	@echo "source HEAD : $$(git log -1 --format='%h %s' 2>/dev/null)"
+	@printf "live daemon : "
+	@curl -fs http://127.0.0.1:7706/health | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("version","?"))' 2>/dev/null || echo "(no /health response — daemon may still be booting)"
+
+version: ## print the source HEAD and the running daemon version side-by-side
+	@echo "source HEAD : $$(git log -1 --format='%h %s' 2>/dev/null)"
+	@printf "live daemon : "
+	@curl -fs http://127.0.0.1:7706/health | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("version","?"))' 2>/dev/null || echo "(daemon not responding)"
+
 logs: ## tail the daemon stdout log
 	@test -f $(LOG_OUT) && tail -f $(LOG_OUT) || echo "$(LOG_OUT) does not exist yet"
 
@@ -92,7 +108,12 @@ clean: ## remove build artifacts
 scan: build ## scan for nearby WalkingPad devices (dev tool, not the daemon)
 	$(BIN_DIR)/$(BINARY) scan
 
-raycast-dev: ## open Raycast extension dev loop
+raycast-dev: ## open Raycast extension dev loop (also prints daemon version drift)
+	@printf "source HEAD : "; git log -1 --format='%h %s' 2>/dev/null || echo "?"
+	@printf "live daemon : "
+	@curl -fs http://127.0.0.1:7706/health | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("version","?"))' 2>/dev/null || echo "(no /health — daemon may not be running)"
+	@echo "---"
+	@echo "If those differ, run \`make redeploy\` before testing daemon changes."
 	cd raycast && npm install && npm run dev
 
 hooks-install: ## install lefthook pre-commit + pre-push hooks (one-time per clone)
@@ -101,4 +122,4 @@ hooks-install: ## install lefthook pre-commit + pre-push hooks (one-time per clo
 
 check: fmt lint test ## run the full local quality gate (fmt + lint + test)
 
-.PHONY: help build build-app run test test-cover fmt lint check hooks-install install install-agent uninstall-agent reload logs logs-err clean scan raycast-dev
+.PHONY: help build build-app run test test-cover fmt lint check hooks-install install install-agent uninstall-agent reload redeploy version logs logs-err clean scan raycast-dev
