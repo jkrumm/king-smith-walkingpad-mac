@@ -19,13 +19,7 @@ import {
   SPEED_GRID,
   speedStep,
 } from "./lib/api";
-import {
-  asImage,
-  barChart,
-  gauge,
-  lineChart,
-  progressRing,
-} from "./lib/charts";
+import { asImage, barChart, lineChart, progressRing } from "./lib/charts";
 import {
   formatDistance,
   formatDuration,
@@ -279,7 +273,10 @@ function renderActive(
   const speed = data.speed_kmh ?? 0;
 
   const lines: string[] = [];
-  lines.push(asImage(gauge({ value: speed, sublabel: "active" }), "speed"));
+
+  // Hero: big speed number + state pill. The previous gauge was eating a
+  // ton of vertical space for one value the metadata sidebar already shows.
+  lines.push(`# ${speed.toFixed(1)} km/h  ·  ACTIVE`);
   lines.push("");
 
   if (cs) {
