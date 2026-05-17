@@ -56,7 +56,6 @@ export function gauge(opts: GaugeOpts): string {
   const arcW = 26;
 
   const startA = Math.PI;
-  const endA = 0;
   const t = (value - min) / (max - min);
   const valueA = startA - t * Math.PI;
 
@@ -65,25 +64,29 @@ export function gauge(opts: GaugeOpts): string {
     y: cy - rr * Math.sin(a),
   });
 
+  // Splits the requested arc into segments through the top (12 o'clock) so
+  // SVG never sees an exact-180° arc — that case is degenerate (both halves
+  // valid) and Raycast's renderer picks the lower half. Going via
+  // (cx, cy - r) is unambiguous. sweep=0 = counter-clockwise visually,
+  // which for our left→right gauge means the upper arc.
   const arcPath = (a0: number, a1: number, rr: number): string => {
+    const top = pt(Math.PI / 2, rr);
     const s = pt(a0, rr);
     const e = pt(a1, rr);
-    const large = Math.abs(a0 - a1) > Math.PI ? 1 : 0;
-    // Sweep flag: 0 = anticlockwise — we draw from left (π) to right (0).
-    return `M ${s.x.toFixed(2)} ${s.y.toFixed(2)} A ${rr} ${rr} 0 ${large} 0 ${e.x.toFixed(2)} ${e.y.toFixed(2)}`;
+    if (a0 > Math.PI / 2 && a1 < Math.PI / 2) {
+      // Crosses the top — emit two segments so neither is 180°.
+      return `M ${s.x.toFixed(2)} ${s.y.toFixed(2)} A ${rr} ${rr} 0 0 0 ${top.x.toFixed(2)} ${top.y.toFixed(2)} A ${rr} ${rr} 0 0 0 ${e.x.toFixed(2)} ${e.y.toFixed(2)}`;
+    }
+    return `M ${s.x.toFixed(2)} ${s.y.toFixed(2)} A ${rr} ${rr} 0 0 0 ${e.x.toFixed(2)} ${e.y.toFixed(2)}`;
   };
 
-  // Colour shifts subtly with speed so you can tell intensity at a glance.
+  // Walking-pace colour ramp: green for everything ≤ 4 km/h (most walking),
+  // orange when jogging, red at sprint. Yellow at 3 km/h read as "danger"
+  // which felt wrong for a comfortable walk.
   const activeColor =
-    value < 2
-      ? p.speed
-      : value < 4
-        ? p.warn
-        : value < 5.5
-          ? "#ff9f0a"
-          : p.danger;
+    value <= 4 ? p.active : value <= 5 ? "#ff9f0a" : p.danger;
 
-  const bgArc = `<path d="${arcPath(startA, endA, r)}" stroke="${p.grid}" stroke-width="${arcW}" fill="none" stroke-linecap="round"/>`;
+  const bgArc = `<path d="${arcPath(startA, 0, r)}" stroke="${p.grid}" stroke-width="${arcW}" fill="none" stroke-linecap="round"/>`;
   const fgArc =
     t > 0
       ? `<path d="${arcPath(startA, valueA, r)}" stroke="${activeColor}" stroke-width="${arcW}" fill="none" stroke-linecap="round"/>`

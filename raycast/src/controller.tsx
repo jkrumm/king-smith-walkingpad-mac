@@ -266,11 +266,15 @@ function renderMarkdown(
   if (!data) return "# WalkingPad\n\nLoading…";
 
   if (!data.connected) return renderDisconnected(recent);
-  if (isRunning(data.belt_state)) return renderActive(data);
+  if (isRunning(data.belt_state)) return renderActive(data, buckets, recent);
   return renderStopped(data, buckets, recent);
 }
 
-function renderActive(data: Status): string {
+function renderActive(
+  data: Status,
+  buckets: ReturnType<typeof useDailyBreakdown>["buckets"],
+  recent: Session[],
+): string {
   const cs = data.current_session;
   const speed = data.speed_kmh ?? 0;
 
@@ -313,9 +317,10 @@ function renderActive(data: Status): string {
     }
   }
 
-  lines.push(
-    `### Today  ·  ${formatDistance(data.today.distance_m)} · ${formatStepsShort(data.today.steps)} steps · ${formatDurationLong(data.today.duration_s)} · ${formatKcal(data.today.kcal)}`,
-  );
+  // Same historicals as the stopped view — having Today's totals and the
+  // 7-day chart visible during a walk lets you see the in-progress session
+  // bump up the running totals in real time.
+  appendHistoricals(lines, data, buckets, recent);
 
   return lines.join("\n");
 }
@@ -325,17 +330,22 @@ function renderStopped(
   buckets: ReturnType<typeof useDailyBreakdown>["buckets"],
   recent: Session[],
 ): string {
+  const lines: string[] = [];
+  appendHistoricals(lines, data, buckets, recent);
+  return lines.join("\n");
+}
+
+function appendHistoricals(
+  lines: string[],
+  data: Status,
+  buckets: ReturnType<typeof useDailyBreakdown>["buckets"],
+  recent: Session[],
+): void {
   const today = data.today;
   const todayKm = today.distance_m / 1000;
-  const lines: string[] = [];
 
   lines.push("## Today");
   lines.push("");
-
-  // Two progress rings side-by-side (rendered as one composite SVG via flow).
-  // Raycast markdown can place two images on the same line if separated by no
-  // newline — here we cheat and use a wider single bar chart instead, which
-  // reads better at Raycast's image scaling.
   lines.push(
     asImage(
       progressRing({
@@ -365,7 +375,6 @@ function renderStopped(
   );
   lines.push("");
 
-  // 7-day bar chart.
   lines.push(
     asImage(
       barChart({
@@ -384,7 +393,6 @@ function renderStopped(
   );
   lines.push("");
 
-  // Recent sessions.
   if (recent.length > 0) {
     lines.push("### Recent sessions");
     const rows = recent
@@ -397,8 +405,6 @@ function renderStopped(
   } else {
     lines.push("> No sessions logged yet. Hit ⌘↩ to start your first walk.");
   }
-
-  return lines.join("\n");
 }
 
 function renderDisconnected(recent: Session[]): string {
