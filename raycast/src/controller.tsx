@@ -57,7 +57,13 @@ export default function Controller() {
         await fn();
         toast.style = Toast.Style.Success;
         toast.title = `${label} ✓`;
+        // Belt state transitions are slow (3-2-1 start ramp, decel frame on
+        // stop). Burst-revalidate so the UI flips fast instead of waiting
+        // for the next 1 s polling tick.
         status.revalidate();
+        setTimeout(() => status.revalidate(), 400);
+        setTimeout(() => status.revalidate(), 1200);
+        setTimeout(() => status.revalidate(), 2500);
       } catch (e) {
         toast.style = Toast.Style.Failure;
         toast.title = label;
@@ -109,6 +115,10 @@ export default function Controller() {
       navigationTitle="WalkingPad"
       actions={
         <ActionPanel>
+          {/* Always show both Start and Stop. The cached `running` flag picks
+              which is primary (=top of the panel, default ⏎), but the other
+              stays clickable in case the cache is stale — the daemon is
+              idempotent so the worst case is a no-op. */}
           <ActionPanel.Section title={running ? "Active" : "Stopped"}>
             {running ? (
               <>
@@ -130,27 +140,39 @@ export default function Controller() {
                   shortcut={{ modifiers: ["cmd"], key: "-" }}
                   onAction={() => onBumpSpeed(-step)}
                 />
+                <Action
+                  title="Start"
+                  icon={Icon.Play}
+                  shortcut={{ modifiers: ["cmd"], key: "return" }}
+                  onAction={() => onStart()}
+                />
               </>
             ) : (
-              <Action
-                title="Start"
-                icon={Icon.Play}
-                shortcut={{ modifiers: ["cmd"], key: "return" }}
-                onAction={() => onStart()}
-              />
+              <>
+                <Action
+                  title="Start"
+                  icon={Icon.Play}
+                  shortcut={{ modifiers: ["cmd"], key: "return" }}
+                  onAction={() => onStart()}
+                />
+                <Action
+                  title="Stop"
+                  icon={Icon.Stop}
+                  shortcut={{ modifiers: ["cmd"], key: "." }}
+                  onAction={onStop}
+                />
+              </>
             )}
             <SetSpeedAction onSubmit={onSetSpeed} />
             <SetStartSpeedAction />
           </ActionPanel.Section>
 
-          <ActionPanel.Section
-            title={running ? "Set Speed (km/h)" : "Start At (km/h)"}
-          >
+          <ActionPanel.Section title="Speed (km/h)">
             {SPEED_GRID.map((v, i) => (
               <Action
                 key={v}
-                title={v.toFixed(1)}
-                icon={running ? Icon.Gauge : Icon.Play}
+                title={`${v.toFixed(1)} km/h`}
+                icon={Icon.Gauge}
                 shortcut={quickShortcut(i)}
                 onAction={() => onPresetSpeed(v)}
               />

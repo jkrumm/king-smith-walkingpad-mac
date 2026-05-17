@@ -24,26 +24,28 @@ import { useSessions, useStatus } from "./lib/hooks";
 import type { Status } from "./lib/types";
 
 export default function MenuBar() {
-  // `useStatus` reads from the on-disk cache and only flips to fresh data
-  // once the fetch resolves. That avoids the "flashing red exclamation"
-  // bug we got from `usePromise`, which started every render with no data.
-  // The 2 s poll only fires while the menu is open (component mounted);
-  // the 30 s `interval:` in package.json drives the background title refresh.
-  const status = useStatus(2000);
+  // 1 s poll while the menu is open — fast enough to catch the belt's
+  // start ramp (it cycles through STARTING/STOPPED frames over ~3 s). The
+  // 30 s `interval:` in package.json drives the background title refresh.
+  const status = useStatus(1000);
   const sessions = useSessions(5);
   const step = useMemo(() => speedStep(), []);
 
   const data = status.data;
   const known = data !== undefined;
   const connected = !!data?.connected;
-  const running = known && isRunning(data?.belt_state);
-  const stopped = known && connected && !running;
 
   const fire = async (label: string, fn: () => Promise<unknown>) => {
     try {
       await fn();
       await showHUD(`✓ ${label}`);
+      // Belt state transitions can take 1–3 s (3-2-1 ramp, decel). Fire a
+      // short burst of revalidations so the UI catches the transition fast
+      // rather than waiting for the next 1 s polling tick.
       status.revalidate();
+      setTimeout(() => status.revalidate(), 400);
+      setTimeout(() => status.revalidate(), 1200);
+      setTimeout(() => status.revalidate(), 2500);
     } catch (e) {
       await showToast({
         style: Toast.Style.Failure,
@@ -96,9 +98,18 @@ export default function MenuBar() {
         />
       </MenuBarExtra.Section>
 
-      {/* Belt control — only show the actions that make sense given state. */}
-      {running && (
+      {/* Belt control — always show Stop + Start when daemon is connected
+          (or when we don't yet know its state). The daemon is idempotent in
+          both directions, so worst case the click is a no-op — vastly better
+          than hiding Stop just because a stale cache said the belt was off. */}
+      {(connected || !known) && (
         <MenuBarExtra.Section title="Belt">
+          <MenuBarExtra.Item
+            title="Start"
+            icon={{ source: Icon.Play, tintColor: Color.Green }}
+            shortcut={{ modifiers: ["cmd"], key: "return" }}
+            onAction={() => fire("Started", () => api.start())}
+          />
           <MenuBarExtra.Item
             title="Stop"
             icon={{ source: Icon.Stop, tintColor: Color.Red }}
@@ -128,35 +139,13 @@ export default function MenuBar() {
         </MenuBarExtra.Section>
       )}
 
-      {stopped && (
-        <MenuBarExtra.Section title="Belt">
-          <MenuBarExtra.Item
-            title="Start"
-            icon={{ source: Icon.Play, tintColor: Color.Green }}
-            shortcut={{ modifiers: ["cmd"], key: "return" }}
-            onAction={() => fire("Started", () => api.start())}
-          />
-        </MenuBarExtra.Section>
-      )}
-
-      {(running || stopped) && (
-        <MenuBarExtra.Section
-          title={
-            running
-              ? "Set Speed (km/h)"
-              : stopped
-                ? "Start At (km/h)"
-                : "Speed (km/h)"
-          }
-        >
+      {(connected || !known) && (
+        <MenuBarExtra.Section title="Speed (km/h)">
           {SPEED_GRID.map((v) => (
             <MenuBarExtra.Item
               key={v}
-              title={v.toFixed(1)}
-              icon={{
-                source: running ? Icon.Gauge : Icon.Play,
-                tintColor: speedTint(v),
-              }}
+              title={`${v.toFixed(1)} km/h`}
+              icon={{ source: Icon.Gauge, tintColor: speedTint(v) }}
               onAction={() => onPresetSpeed(v)}
             />
           ))}
