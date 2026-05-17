@@ -37,15 +37,24 @@ const (
 )
 
 // BeltState mirrors the raw byte at status frame offset 2.
+//
+// Verified empirically against the user's P1 (PRD §4.4 footnote): the original
+// ph4r05 mapping (1=active, 2=paused) is stale. Current P1 firmware uses byte
+// 2 for the running state, never emits byte 1, and cycles 9→8→7 as a 3-2-1
+// start-countdown before settling to 2. Byte 4 appears for exactly one frame
+// during decel and is the **last chance** to capture in-session counters
+// before byte 0 resets them.
 type BeltState uint8
 
-// BeltState values (see PRD §4.4).
+// BeltState values. See type doc for the verification source.
 const (
-	BeltStopped  BeltState = 0
-	BeltActive   BeltState = 1
-	BeltPaused   BeltState = 2 // decel to 0; counters preserved
-	BeltStandby  BeltState = 5 // belt powered down; counters will reset
-	BeltStarting BeltState = 9 // ramp-up
+	BeltStopped   BeltState = 0 // idle; counters reset to 0 on entry
+	BeltActive    BeltState = 2 // running; counters monotonic
+	BeltStopping  BeltState = 4 // ~1-frame decel window; counters still hold the run total
+	BeltStandby   BeltState = 5 // belt powered down (unverified on P1; preserved from ph4 docs)
+	BeltStarting3 BeltState = 9 // start press; first frame of 3-2-1 ramp
+	BeltStarting2 BeltState = 8 // 2nd ramp frame
+	BeltStarting1 BeltState = 7 // 3rd ramp frame; next frame is BeltActive
 )
 
 func (s BeltState) String() string {
@@ -54,16 +63,25 @@ func (s BeltState) String() string {
 		return "stopped"
 	case BeltActive:
 		return "active"
-	case BeltPaused:
-		return "paused"
+	case BeltStopping:
+		return "stopping"
 	case BeltStandby:
 		return "standby"
-	case BeltStarting:
+	case BeltStarting1, BeltStarting2, BeltStarting3:
 		return "starting"
 	default:
 		return fmt.Sprintf("unknown(%d)", uint8(s))
 	}
 }
+
+// IsStarting reports whether the belt is in any of the 3-2-1 ramp frames.
+func (s BeltState) IsStarting() bool {
+	return s == BeltStarting1 || s == BeltStarting2 || s == BeltStarting3
+}
+
+// IsRunning reports whether counters are advancing this frame (active or
+// the final decel frame, both of which carry real time/distance/steps).
+func (s BeltState) IsRunning() bool { return s == BeltActive || s == BeltStopping }
 
 // Mode is the belt operating mode (auto/manual/standby).
 type Mode uint8
@@ -89,15 +107,26 @@ func (m Mode) String() string {
 }
 
 // Button is the value of the physical remote button at status offset 16.
+//
+// The high bit (0x80) is a modifier observed empirically (likely "long-press"
+// or "held"); DecodeStatus masks it before assigning, so callers compare only
+// against the low bits. The raw byte is still available via Status.Raw[16].
 type Button uint8
 
 // Physical-remote button values reported in the status frame.
+//
+// Verified empirically: the P1 remote has a single power button (used both
+// for start and stop) which fires ButtonPower=3 — the PRD's "3=stop" label
+// from ph4r05 was incomplete.
 const (
-	ButtonNone Button = 0
-	ButtonUp   Button = 2
-	ButtonStop Button = 3
-	ButtonDown Button = 4
+	ButtonNone  Button = 0
+	ButtonUp    Button = 2
+	ButtonPower Button = 3 // start AND stop (single physical button on the P1 remote)
+	ButtonDown  Button = 4
 )
+
+// buttonMask strips the high modifier bit (e.g. long-press indicator).
+const buttonMask byte = 0x7F
 
 // PrefKey is the preference key used with the 10-byte set-pref command (0xA6).
 type PrefKey uint8
@@ -174,7 +203,7 @@ func DecodeStatus(buf []byte) (Status, error) {
 	s.Distance = float64(uint24BE(buf[8:11])) * 10.0 // wire unit is 10 m
 	s.Steps = uint24BE(buf[11:14])
 	s.AppSpeed = buf[14]
-	s.Button = Button(buf[16])
+	s.Button = Button(buf[16] & buttonMask)
 	return s, nil
 }
 

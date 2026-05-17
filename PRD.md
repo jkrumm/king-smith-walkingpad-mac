@@ -152,20 +152,37 @@ Reverse-engineered from `ph4r05/ph4-walkingpad`, cross-verified against `tim-ost
 | 11..13 | 3 | steps | uint24 BE |
 | 14 | 1 | app_speed | last commanded speed (semantics fuzzy) |
 | 15 | 1 | reserved | "unknown" — possibly HR on equipped models, **0 on P1** |
-| 16 | 1 | button | physical remote: 0=none, 2=up, 3=stop, 4=down |
-| 17 | 1 | CRC | `sum(buf[1:17]) & 0xFF` |
-| 18 | 1 | reserved | — |
+| 16 | 1 | button | physical remote — see Button values below |
+| 17 | 1 | reserved | always 0x00 on observed P1 |
+| 18 | 1 | CRC | `sum(buf[1:18]) & 0xFF` |
 | 19 | 1 | terminator | `0xFD` |
 
-**Belt state values:**
+> CRC offset corrected from the original ph4r05 docs (which listed offset 17). The verified scope is `sum(buf[1:len(buf)-2])`; on a 20-byte status frame that puts the CRC at offset 18.
 
-| Value | State |
-|-|-|
-| 0 | STOPPED |
-| 1 | ACTIVE |
-| 2 | PAUSED (decel to 0; counters preserved) |
-| 5 | STANDBY (belt powered down) |
-| 9 | STARTING (ramp-up) |
+**Belt state values (verified on user's P1, 2026-05-17):**
+
+| Byte | State | Notes |
+|-|-|-|
+| `0x00` | STOPPED | idle; counters reset to 0 immediately on entry |
+| `0x02` | ACTIVE | running; counters monotonic. **The only state called "ACTIVE".** |
+| `0x04` | STOPPING | ~1-frame decel window; counters still hold the run total — **last chance** to capture session stats |
+| `0x05` | STANDBY | belt powered down (preserved from ph4 docs; not yet verified on user's P1) |
+| `0x07` | STARTING (1) | 3rd ramp frame; next frame is ACTIVE |
+| `0x08` | STARTING (2) | middle ramp frame |
+| `0x09` | STARTING (3) | first frame after start press |
+
+> **Original ph4r05 table (stale).** The ph4r05 docs list `0x01=ACTIVE`, `0x02=PAUSED`, `0x09=STARTING` with no entries for `0x04 / 0x07 / 0x08`. On current P1 firmware byte `0x01` is never emitted, byte `0x02` is active (not paused), and start press cycles `0x09 → 0x08 → 0x07 → 0x02` over three seconds (matches the 3-2-1 countdown on the LED display). Stop press cycles `0x02 → 0x04 → 0x00`. The Go enum in `internal/ble/frames.go` reflects the verified mapping and exposes `IsStarting()` / `IsRunning()` helpers; `IsRunning()` is true for both `0x02` and `0x04` so the session manager doesn't lose the final decel sample.
+
+**Button values:**
+
+| Byte | Button | Notes |
+|-|-|-|
+| `0x00` | none | most common |
+| `0x02` | up (+) | speed increase |
+| `0x03` | power | start AND stop (single physical button on the P1 remote) |
+| `0x04` | down (−) | speed decrease |
+
+> Bit `0x80` of the button byte is a held-press modifier (observed empirically as `0x83` = power held). The decoder masks the high bit before assigning, so callers compare only against the table above. The raw byte is preserved at `Status.Raw[16]` for diagnostics.
 
 ### 4.5 Polling & rate limits
 

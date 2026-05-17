@@ -35,7 +35,8 @@ A macOS LaunchAgent (Go) + Raycast extension that controls and tracks the KingSm
 5. **Speed encoding.** Wire format is `speed_kmh × 10` as a single byte (uint8). Range 0–60. Always validate the input before encoding.
 6. **Distance encoding.** Wire format is uint24 BE in units of **10 m**. Divide raw by 100 for km, by 10 for metres.
 7. **Calories are NOT in the status frame.** Compute client-side using the MET formula (`session/calories.go`). User weight from config.
-8. **Session counters reset on device STANDBY.** When the belt powers down, the next session starts at 0. The `session.Manager` handles cross-session aggregation; do not assume monotonic counters across BLE reconnects.
+8. **Session counters reset on every STOP, not only on STANDBY.** Verified on the user's P1 (POC hardware run, 2026-05-17): the moment the belt state byte transitions to `0x00` (STOPPED), `time / distance / steps` all read 0 in that same frame. The `0x04` (STOPPING) frame is the **last chance** to capture in-session totals — `BeltState.IsRunning()` returns true for both `0x02` and `0x04` so the session manager won't drop it. Do not assume monotonic counters across any stop.
+9. **State-byte mapping diverges from ph4r05.** PRD §4.4 has the verified table; the short version is `0x00=STOPPED, 0x02=ACTIVE, 0x04=STOPPING, 0x05=STANDBY, 0x07/0x08/0x09=3-2-1 start ramp`. Byte `0x01` is never emitted by current P1 firmware. Trust the Go enum in `internal/ble/frames.go`, not the ph4 docs.
 
 ## Reference implementations (cloned during research)
 

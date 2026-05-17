@@ -43,6 +43,11 @@ func TestCRC(t *testing.T) {
 }
 
 // TestDecodeStatus_Fixture is the PRD §4.4 worked example.
+//
+// The fixture's state byte is 0x01 — that value is undocumented in current
+// firmware (the P1 uses 0x02 for active). We still decode it correctly into
+// the typed enum (as the catch-all "unknown(1)" via the default String case)
+// and the numeric fields are unaffected.
 func TestDecodeStatus_Fixture(t *testing.T) {
 	buf := mustHex(t, "f8 a2 01 0f 01 00 0f d1 00 00 ab 00 12 ae 3c 00 00 00 3a fd")
 
@@ -50,8 +55,8 @@ func TestDecodeStatus_Fixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeStatus error: %v", err)
 	}
-	if s.State != BeltActive {
-		t.Errorf("State = %v, want active", s.State)
+	if s.State != BeltState(1) {
+		t.Errorf("State = %v, want raw byte 1", s.State)
 	}
 	if s.SpeedKmh != 1.5 {
 		t.Errorf("SpeedKmh = %v, want 1.5", s.SpeedKmh)
@@ -132,9 +137,12 @@ func TestDecodeStatus_Errors(t *testing.T) {
 }
 
 func TestDecodeStatus_StateAndMode(t *testing.T) {
-	// Build a synthetic frame for every documented belt state and mode.
+	// Build a synthetic frame for every verified belt state and mode.
 	base := mustHex(t, "f8 a2 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 fd")
-	states := []BeltState{BeltStopped, BeltActive, BeltPaused, BeltStandby, BeltStarting}
+	states := []BeltState{
+		BeltStopped, BeltActive, BeltStopping, BeltStandby,
+		BeltStarting1, BeltStarting2, BeltStarting3,
+	}
 	modes := []Mode{ModeAuto, ModeManual, ModeStandby}
 	for _, st := range states {
 		for _, md := range modes {
@@ -150,6 +158,71 @@ func TestDecodeStatus_StateAndMode(t *testing.T) {
 				t.Errorf("state/mode mismatch: got %v/%v want %v/%v", got.State, got.Mode, st, md)
 			}
 		}
+	}
+}
+
+// TestBeltState_Helpers locks the IsStarting/IsRunning semantics that the
+// session manager will rely on.
+func TestBeltState_Helpers(t *testing.T) {
+	cases := []struct {
+		state      BeltState
+		isStarting bool
+		isRunning  bool
+	}{
+		{BeltStopped, false, false},
+		{BeltActive, false, true},
+		{BeltStopping, false, true}, // counters still valid; must be captured
+		{BeltStandby, false, false},
+		{BeltStarting1, true, false},
+		{BeltStarting2, true, false},
+		{BeltStarting3, true, false},
+		{BeltState(99), false, false}, // unknown bytes fall through cleanly
+	}
+	for _, tc := range cases {
+		t.Run(tc.state.String(), func(t *testing.T) {
+			if got := tc.state.IsStarting(); got != tc.isStarting {
+				t.Errorf("IsStarting = %v, want %v", got, tc.isStarting)
+			}
+			if got := tc.state.IsRunning(); got != tc.isRunning {
+				t.Errorf("IsRunning = %v, want %v", got, tc.isRunning)
+			}
+		})
+	}
+}
+
+// TestDecodeStatus_ButtonMask covers the empirically-observed 0x83 modifier:
+// the high bit (likely long-press) must be stripped before assignment so
+// callers only compare against the documented low-bit values.
+func TestDecodeStatus_ButtonMask(t *testing.T) {
+	base := mustHex(t, "f8 a2 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 fd")
+	cases := []struct {
+		name      string
+		rawButton byte
+		want      Button
+	}{
+		{"none", 0x00, ButtonNone},
+		{"up", 0x02, ButtonUp},
+		{"power", 0x03, ButtonPower},
+		{"down", 0x04, ButtonDown},
+		{"power held (0x83)", 0x83, ButtonPower},
+		{"up held (0x82)", 0x82, ButtonUp},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := append([]byte(nil), base...)
+			f[16] = tc.rawButton
+			f[18] = crc(f)
+			s, err := DecodeStatus(f)
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if s.Button != tc.want {
+				t.Errorf("Button = %v, want %v", s.Button, tc.want)
+			}
+			if s.Raw[16] != tc.rawButton {
+				t.Errorf("Raw[16] = %02x, want %02x (raw byte must be preserved)", s.Raw[16], tc.rawButton)
+			}
+		})
 	}
 }
 
