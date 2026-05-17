@@ -38,6 +38,20 @@
       "description": "Change current walking speed (recommended hotkey: ⌥S)",
       "mode": "view",
       "keywords": ["walkingpad", "speed", "pace"]
+    },
+    {
+      "name": "speed-up",
+      "title": "Speed Up",
+      "description": "Increase belt speed by the Speed Step (default 0.5 km/h). Bind a global hotkey in Raycast settings — recommended ⌥=",
+      "mode": "no-view",
+      "keywords": ["walkingpad", "faster", "up", "speed"]
+    },
+    {
+      "name": "speed-down",
+      "title": "Speed Down",
+      "description": "Decrease belt speed by the Speed Step (default 0.5 km/h). Bind a global hotkey in Raycast settings — recommended ⌥-",
+      "mode": "no-view",
+      "keywords": ["walkingpad", "slower", "down", "speed"]
     }
   ],
   "preferences": [
@@ -72,6 +86,9 @@
   "dependencies": {
     "@raycast/api": "^1.104.0",
     "@raycast/utils": "^1.17.0"
+  },
+  "overrides": {
+    "minimatch": "^10.0.1"
   },
   "devDependencies": {
     "@raycast/eslint-config": "^1.0.11",

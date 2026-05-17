@@ -1,5 +1,5 @@
 import { useCachedPromise } from "@raycast/utils";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { api } from "./api";
 import type { Period, Session } from "./types";
 
@@ -8,14 +8,21 @@ import type { Period, Session } from "./types";
 // Cached so we show last-known data instantly on open (no flash to red) and
 // only swap to fresh values once the new fetch resolves. The interval keeps
 // the readout live while the view stays mounted.
+//
+// We pin the revalidate fn behind a ref so the polling useEffect doesn't
+// list it as a dep — if @raycast/utils ever changed identity per render
+// the effect would tear down + re-arm the interval on every tick, which
+// trips Raycast's "rendering a lot without changes" detector.
 export function useStatus(refreshMs = 1000) {
   const result = useCachedPromise(() => api.status(), [], {
     keepPreviousData: true,
   });
+  const revalidateRef = useRef(result.revalidate);
+  revalidateRef.current = result.revalidate;
   useEffect(() => {
-    const id = setInterval(() => result.revalidate(), refreshMs);
+    const id = setInterval(() => revalidateRef.current(), refreshMs);
     return () => clearInterval(id);
-  }, [refreshMs, result.revalidate]);
+  }, [refreshMs]);
   return result;
 }
 
