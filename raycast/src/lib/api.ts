@@ -93,8 +93,18 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (text ? JSON.parse(text) : ({} as T)) as T;
 }
 
+// The Go daemon emits belt_state as lowercase strings ("active", "stopped",
+// …). Every Raycast comparison expects uppercase. Normalize at the boundary
+// so consumers don't have to remember.
+function upper<T extends { belt_state?: string }>(o: T): T {
+  return o.belt_state ? { ...o, belt_state: o.belt_state.toUpperCase() } : o;
+}
+
 export const api = {
-  status: () => request<Status>("/status"),
+  status: async () => {
+    const raw = await request<Status>("/status");
+    return upper(raw);
+  },
   start: (speed_kmh?: number) =>
     request<OkResponse>("/start", {
       method: "POST",
@@ -115,7 +125,10 @@ export const api = {
       body: JSON.stringify({ speed_kmh: clampSpeed(speed_kmh) }),
     }),
   sessions: (limit = 50) => request<SessionsList>(`/sessions?limit=${limit}`),
-  session: (uuid: string) => request<SessionDetail>(`/sessions/${uuid}`),
+  session: async (uuid: string) => {
+    const raw = await request<SessionDetail>(`/sessions/${uuid}`);
+    return { ...raw, samples: raw.samples.map(upper) };
+  },
   summary: (period: Period) => request<Summary>(`/summary?period=${period}`),
   sync: () => request<SyncResult>("/sync/argo", { method: "POST" }),
 };
