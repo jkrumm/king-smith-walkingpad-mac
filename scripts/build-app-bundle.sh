@@ -24,6 +24,8 @@ APP_PATH=$3
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PLIST_TMPL="$SCRIPT_DIR/Info.plist.tmpl"
+ICON_PNG="$SCRIPT_DIR/icon.png"
+BUILD_ICNS="$SCRIPT_DIR/build-icns.sh"
 
 if [[ ! -x "$BINARY" ]]; then
   echo "error: binary not found or not executable: $BINARY" >&2
@@ -44,6 +46,13 @@ mkdir -p "$APP_DIR/MacOS" "$APP_DIR/Resources"
 # Substitute __VERSION__ into the Info.plist. Use a temp file so the template
 # stays read-only on disk.
 sed "s/__VERSION__/${VERSION//\//_}/g" "$PLIST_TMPL" > "$APP_DIR/Info.plist"
+
+# Build the .icns at bundle time from scripts/icon.png (single source of
+# truth). Skips silently if the source is missing — the bundle still runs
+# headlessly, just shows a generic Finder icon.
+if [[ -f "$ICON_PNG" && -x "$BUILD_ICNS" ]]; then
+  "$BUILD_ICNS" "$ICON_PNG" "$APP_DIR/Resources/AppIcon.icns"
+fi
 
 # Copy the binary; preserve the executable bit. Use install to set 0755 explicitly.
 install -m 0755 "$BINARY" "$APP_DIR/MacOS/$BINARY_BASENAME"
