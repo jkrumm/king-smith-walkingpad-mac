@@ -241,6 +241,20 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, version strin
 			return runDropLoop(runCtx, st, minDur, resurrectWindow, log)
 		})
 	}
+
+	// Reconcile argo orphans before the sync ticker arms. Synchronous so
+	// the resulting tombstones land in the first flush. Soft-fail: if argo
+	// is unreachable the daemon still starts and the next reconcile run on
+	// the next startup will retry.
+	if syncWorker != nil {
+		reconcileCtx, reconcileCancel := context.WithTimeout(ctx, 30*time.Second)
+		if orphans, err := syncWorker.Reconcile(reconcileCtx); err != nil {
+			log.Warn("sync.reconcile_failed", "err", err)
+		} else if orphans > 0 {
+			log.Info("sync.reconcile_done", "orphans_tombstoned", orphans)
+		}
+		reconcileCancel()
+	}
 	if syncWorker != nil {
 		spawn("sync", func() error { return syncWorker.Run(runCtx) })
 	}

@@ -23,20 +23,65 @@ type fakeStore struct {
 	marked             map[string]time.Time
 	pendingTombstones  []store.Tombstone
 	markedTombstones   map[string]time.Time
+	localUUIDs         map[string]struct{}
+	writtenTombstones  map[string]time.Time
 	listErr            error
 	markErr            error
 	listTombErr        error
 	markTombErr        error
+	listUUIDsErr       error
 	listCalls          atomic.Int32
 	listTombstoneCalls atomic.Int32
 }
 
 func newFakeStore(sessions ...store.Session) *fakeStore {
 	return &fakeStore{
-		pending:          sessions,
-		marked:           map[string]time.Time{},
-		markedTombstones: map[string]time.Time{},
+		pending:           sessions,
+		marked:            map[string]time.Time{},
+		markedTombstones:  map[string]time.Time{},
+		localUUIDs:        map[string]struct{}{},
+		writtenTombstones: map[string]time.Time{},
 	}
+}
+
+func (f *fakeStore) seedLocalUUID(uuids ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, u := range uuids {
+		f.localUUIDs[u] = struct{}{}
+	}
+}
+
+func (f *fakeStore) AllSessionUUIDs(_ context.Context) (map[string]struct{}, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listUUIDsErr != nil {
+		return nil, f.listUUIDsErr
+	}
+	out := make(map[string]struct{}, len(f.localUUIDs))
+	for u := range f.localUUIDs {
+		out[u] = struct{}{}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) WriteTombstone(_ context.Context, uuid string, deletedAt time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.writtenTombstones[uuid] = deletedAt
+	// Auto-queue so a follow-up flush picks it up.
+	f.pendingTombstones = append(f.pendingTombstones, store.Tombstone{UUID: uuid, DeletedAt: deletedAt})
+	return nil
+}
+
+func (f *fakeStore) writtenTombstoneUUIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.writtenTombstones))
+	for u := range f.writtenTombstones {
+		out = append(out, u)
+	}
+	return out
 }
 
 func (f *fakeStore) UnsyncedSessions(_ context.Context, limit int) ([]store.Session, error) {

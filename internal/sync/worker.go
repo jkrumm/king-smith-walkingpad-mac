@@ -75,6 +75,8 @@ type storeAPI interface {
 	MarkSynced(ctx context.Context, uuid string, syncedAt time.Time) error
 	UnsyncedTombstones(ctx context.Context, limit int) ([]store.Tombstone, error)
 	MarkTombstoneSynced(ctx context.Context, uuid string, syncedAt time.Time) error
+	AllSessionUUIDs(ctx context.Context) (map[string]struct{}, error)
+	WriteTombstone(ctx context.Context, uuid string, deletedAt time.Time) error
 }
 
 // Worker owns the upload loop. Instantiate one per process; safe for

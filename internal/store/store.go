@@ -337,6 +337,28 @@ func (s *Store) UnsyncedSessions(ctx context.Context, limit int) ([]Session, err
 	return out, rows.Err()
 }
 
+// AllSessionUUIDs returns the set of every UUID currently in the sessions
+// table, regardless of open/closed/synced state. Used by the sync worker's
+// reconciliation pass to diff against argo and tombstone any UUIDs that
+// only exist upstream (typically legacy orphans from pre-tombstone stitches).
+func (s *Store) AllSessionUUIDs(ctx context.Context) (map[string]struct{}, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT uuid FROM sessions`)
+	if err != nil {
+		return nil, fmt.Errorf("list session uuids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := map[string]struct{}{}
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, err
+		}
+		out[u] = struct{}{}
+	}
+	return out, rows.Err()
+}
+
 // MarkSynced stamps synced_at on a session by UUID. Idempotent — calling twice
 // silently overwrites with the later timestamp.
 func (s *Store) MarkSynced(ctx context.Context, uuid string, syncedAt time.Time) error {
