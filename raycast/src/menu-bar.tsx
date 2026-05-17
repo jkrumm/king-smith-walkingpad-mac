@@ -20,11 +20,16 @@ import {
   formatTime,
 } from "./lib/format";
 import { isRunning, stateDisplay } from "./lib/state";
-import { useSessions, useStatusFresh } from "./lib/hooks";
+import { useSessions, useStatus } from "./lib/hooks";
 import type { Status } from "./lib/types";
 
 export default function MenuBar() {
-  const status = useStatusFresh();
+  // `useStatus` reads from the on-disk cache and only flips to fresh data
+  // once the fetch resolves. That avoids the "flashing red exclamation"
+  // bug we got from `usePromise`, which started every render with no data.
+  // The 2 s poll only fires while the menu is open (component mounted);
+  // the 30 s `interval:` in package.json drives the background title refresh.
+  const status = useStatus(2000);
   const sessions = useSessions(5);
   const step = useMemo(() => speedStep(), []);
 
@@ -61,9 +66,9 @@ export default function MenuBar() {
   return (
     <MenuBarExtra
       isLoading={status.isLoading && !data}
-      title={renderTitle(data)}
+      title={renderTitle(data, status.isLoading)}
       tooltip={renderTooltip(data)}
-      icon={menuBarIcon(data)}
+      icon={menuBarIcon(data, status.isLoading)}
     >
       {/* Header: state + freshness */}
       <MenuBarExtra.Section title={renderHeader(data)}>
@@ -212,8 +217,10 @@ export default function MenuBar() {
 // Title is the bit that lives in the system menu bar — keep it short.
 // User explicitly does NOT want a walking emoji; we use plain text + a
 // neutral SF Symbol icon to the left.
-function renderTitle(data: Status | undefined): string {
-  if (!data) return "WalkingPad";
+function renderTitle(data: Status | undefined, isLoading: boolean): string {
+  // While the first fetch is in flight we don't yet know if the daemon is up,
+  // so don't claim "offline" — that flashed red on every menu open.
+  if (!data) return isLoading ? "WalkingPad" : "offline";
   if (!data.connected) return "offline";
   if (data.belt_state === "ACTIVE") {
     const steps = data.current_session?.steps ?? 0;
@@ -233,8 +240,16 @@ function renderTitle(data: Status | undefined): string {
 // involvement, so it doesn't violate the "no walking emoji" rule.
 function menuBarIcon(
   data: Status | undefined,
+  isLoading: boolean,
 ): Icon | { source: Icon; tintColor: Color } {
-  if (!data || !data.connected)
+  // No data and still fetching: neutral pulse, NOT red. Red is reserved for
+  // the case where we've actually confirmed the daemon is unreachable.
+  if (!data)
+    return {
+      source: Icon.Circle,
+      tintColor: isLoading ? Color.SecondaryText : Color.Red,
+    };
+  if (!data.connected)
     return { source: Icon.ExclamationMark, tintColor: Color.Red };
   if (data.belt_state === "ACTIVE")
     return { source: Icon.CircleFilled, tintColor: Color.Green };

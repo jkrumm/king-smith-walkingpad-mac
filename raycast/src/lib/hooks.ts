@@ -1,14 +1,13 @@
-import { useCachedPromise, usePromise } from "@raycast/utils";
+import { useCachedPromise } from "@raycast/utils";
 import { useEffect, useMemo } from "react";
 import { api } from "./api";
 import type { Period, Session } from "./types";
 
 // --- Status -----------------------------------------------------------------
 
-// useStatus polls /status on a tight interval — used inside the controller
-// where we want a smooth live readout. The menu bar uses a simpler always-
-// fresh variant so the title text stays current.
-
+// Cached so we show last-known data instantly on open (no flash to red) and
+// only swap to fresh values once the new fetch resolves. The interval keeps
+// the readout live while the view stays mounted.
 export function useStatus(refreshMs = 1000) {
   const result = useCachedPromise(() => api.status(), [], {
     keepPreviousData: true,
@@ -18,12 +17,6 @@ export function useStatus(refreshMs = 1000) {
     return () => clearInterval(id);
   }, [refreshMs, result.revalidate]);
   return result;
-}
-
-// Menu-bar variant: prefer fresh data over a cached value so a long-running
-// menu-bar process doesn't show day-old numbers when the user opens it.
-export function useStatusFresh() {
-  return usePromise(() => api.status());
 }
 
 // --- Sessions ---------------------------------------------------------------
