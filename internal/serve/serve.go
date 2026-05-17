@@ -117,6 +117,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, version strin
 	// still works.
 	var syncer api.Syncer = api.NopSyncer{}
 	var syncWorker *syncpkg.Worker
+	var liveWorker *syncpkg.LiveWorker
 	if cfg.SyncEnabled() {
 		syncWorker = syncpkg.NewWorker(syncpkg.Config{
 			BaseURL:   cfg.Argo.URL,
@@ -124,6 +125,11 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, version strin
 			UserAgent: "king-smith-walkingpad-mac/" + version,
 		}, st, log)
 		syncer = syncWorker
+		liveWorker = syncpkg.NewLiveWorker(syncpkg.LiveConfig{
+			BaseURL:   cfg.Argo.URL,
+			Token:     cfg.Argo.Token,
+			UserAgent: "king-smith-walkingpad-mac/" + version,
+		}, mgr, log)
 	} else {
 		log.Info("sync.disabled", "reason", "no argo.token set")
 	}
@@ -184,6 +190,9 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, version strin
 	spawn("tick", func() error { return runTickLoop(runCtx, mgr, log) })
 	if syncWorker != nil {
 		spawn("sync", func() error { return syncWorker.Run(runCtx) })
+	}
+	if liveWorker != nil {
+		spawn("live", func() error { return liveWorker.Run(runCtx) })
 	}
 
 	wg.Wait()
