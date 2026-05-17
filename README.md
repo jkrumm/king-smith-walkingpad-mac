@@ -46,27 +46,21 @@ Explicit non-goals: no Garmin upload (Garmin Connect can't update the watch's da
 ```bash
 git clone https://github.com/jkrumm/king-smith-walkingpad-mac.git
 cd king-smith-walkingpad-mac
-make install
+make up
 ```
 
-`make install` does the following:
+`make up` does everything:
 
 1. Builds the Go binary.
-2. Wraps it into `King-Smith-WalkingPad-Mac.app` (required — macOS denies Bluetooth access to bare CLI binaries).
+2. Wraps it into `WalkingPad.app` (required — macOS denies Bluetooth access to bare CLI binaries).
 3. Copies the `.app` to `/Applications/`.
-4. Installs and starts a LaunchAgent at `~/Library/LaunchAgents/com.jkrumm.king-smith-walkingpad-mac.plist`.
+4. Installs and starts the LaunchAgent at `~/Library/LaunchAgents/com.jkrumm.walkingpad.plist` (only on first run; subsequent runs just kickstart it).
+5. Hits `/health` and prints `daemon source` vs `daemon live` so the version match is obvious.
+6. Starts the Raycast dev loop (`ray develop`).
 
 The first run will prompt macOS to grant Bluetooth permission. Accept the prompt. If you miss it, grant it manually in **System Settings → Privacy & Security → Bluetooth**.
 
-### Raycast extension
-
-```bash
-cd raycast
-npm install
-npm run dev          # opens it in Raycast development mode
-```
-
-Once you've verified it works, build and import the production bundle in Raycast. Until the extension is published to the Raycast Store, this is the supported install path.
+Re-run `make up` after every code change. It's the only command you need for the dev loop. The Raycast portion requires Node ≥22.22.2 (pinned in `raycast/.nvmrc`); if you don't have it the daemon still deploys and `make up` exits early with a friendly nudge.
 
 ## Configuration
 
@@ -94,10 +88,10 @@ url = ""                 # leave empty to disable Argo sync
 
 All fields optional. Without `argo.url` set, sessions stay local — you still get full control and history, just no remote sync.
 
-After editing, reload the daemon:
+After editing, redeploy the daemon:
 
 ```bash
-make reload
+make up
 ```
 
 ## Usage
@@ -151,7 +145,7 @@ See [`PRD.md`](./PRD.md) for the full architecture, BLE protocol spec, and desig
 |-|-|
 | `make scan` finds no devices | macOS Bluetooth permission. Check **System Settings → Privacy & Security → Bluetooth**. The `.app` must be listed and enabled. |
 | Daemon connects but no status frames | Device is in standby. Press a button on the remote to wake it, then retry. |
-| "Address already in use" | Another instance of the daemon is running. `make uninstall-agent && make reload`. |
+| "Address already in use" | Another instance of the daemon is running. `launchctl unload ~/Library/LaunchAgents/com.jkrumm.walkingpad.plist && make up`. |
 | Belt ignores speed commands | Wire format is `speed × 10` — bug in your custom client. Use the API. |
 | Sessions don't show up in Argo | Check `[argo]` config and `make logs`. Sync runs every 30 min plus on each session close; manual trigger: `curl -X POST http://127.0.0.1:7706/sync/argo`. |
 | BLE drops mid-session | Auto-reconnect kicks in for 60 s. Longer drops close the session at the drop time. Tune `[session].resume_within_seconds`. |
@@ -159,12 +153,14 @@ See [`PRD.md`](./PRD.md) for the full architecture, BLE protocol spec, and desig
 ## Development
 
 ```bash
-make help                # list all targets
-make fmt                 # format
-make test                # unit tests
-make lint                # golangci-lint
-make run                 # build + run in foreground (faster iteration than LaunchAgent)
-make raycast-dev         # Raycast dev mode
+make            # default — show the menu
+make up         # rebuild daemon + deploy + start Raycast dev (the only command you need)
+make test       # go test -race + raycast tsc --noEmit
+make logs       # tail /tmp/walkingpad.log
+make lint       # golangci-lint
+make fmt        # gofmt + go mod tidy
+make scan       # BLE device discovery (dev tool)
+make clean      # remove ./bin
 ```
 
 Read [`CLAUDE.md`](./CLAUDE.md) before extending. It captures the non-obvious gotchas (BLE rate limit, CRC scope, `.app` bundle requirement, etc.).

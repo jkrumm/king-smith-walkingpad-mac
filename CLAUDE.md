@@ -72,20 +72,23 @@ Full diagram and per-file responsibilities in PRD §5.
 ## Devloop
 
 ```bash
-make build               # → ./bin/walkingpad
-make test                # go test -race
-make test-cover          # coverage report
-make fmt                 # gofmt + go mod tidy
-make lint                # golangci-lint (brew install golangci-lint)
-make run                 # build + run in foreground
-make scan                # dev tool: list nearby WalkingPad devices
-make install-agent       # install LaunchAgent plist (after build-app-bundle)
-make reload              # kickstart the agent
-make logs                # tail /tmp/walkingpad.log
-make raycast-dev         # cd raycast && ray develop
+make            # default — print the menu
+make up         # THE one — rebuild daemon, deploy to /Applications, kickstart
+                # the LaunchAgent, verify the live /health version, then start
+                # the Raycast dev loop. Run after every code change.
+make test       # go test -race + raycast tsc --noEmit
+make logs       # tail /tmp/walkingpad.log
+make scan       # list nearby WalkingPad BLE devices (dev tool)
+make fmt        # gofmt + go mod tidy
+make lint       # golangci-lint
+make clean      # remove ./bin
 ```
 
-For BLE work, prefer `make run` over the LaunchAgent (faster iteration, foreground stderr).
+The previous separate `build` / `build-app` / `install` / `install-agent` /
+`reload` / `redeploy` / `version` / `raycast-dev` targets are gone — they all
+folded into `make up`. The pre-commit hook runs gofmt + govet + golangci-lint
++ `go test -race` directly (not via make targets), so removing them doesn't
+break CI.
 
 ## Coding conventions
 
@@ -119,4 +122,4 @@ Per global rules: argo changes happen as a **separate PR** in the argo repo, nev
 
 ## Milestone reminder
 
-We're in **Milestone 0 — POC**. Exit criterion: `make build && ./bin/walkingpad connect` streams live status frames from the P1 for ≥60 s with no drops. Until that works on the actual hardware, nothing else matters. Resist scope creep into Milestone 1 features.
+We're in **Milestone 0 — POC**. Exit criterion: `make up && ./bin/walkingpad connect` streams live status frames from the P1 for ≥60 s with no drops. Until that works on the actual hardware, nothing else matters. Resist scope creep into Milestone 1 features.
