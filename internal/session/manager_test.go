@@ -116,8 +116,13 @@ func TestManager_OpenExtendClose(t *testing.T) {
 	if got.MaxSpeedKmh != 4.0 {
 		t.Errorf("max_speed = %g, want 4.0", got.MaxSpeedKmh)
 	}
-	if got.DurationS != 3 {
-		t.Errorf("duration_s = %d, want 3", got.DurationS)
+	// Window-based duration: opens at the first running frame (t=0) and
+	// closes at the first non-running frame (t=10s). The dt-between-frames
+	// approach used to yield 3 here; window-based is the correct "time the
+	// belt was actually running" — slow BLE polling or brief pause boundaries
+	// no longer drop seconds.
+	if got.DurationS != 10 {
+		t.Errorf("duration_s = %d, want 10", got.DurationS)
 	}
 }
 

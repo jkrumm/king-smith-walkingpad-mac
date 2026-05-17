@@ -29,10 +29,11 @@ import (
 const resumeMaxAge = 6 * time.Hour
 
 // runningGapMaxSeconds caps how much wall-time can elapse between two
-// "running" samples before we stop counting the gap toward active duration.
-// With 1 Hz polling, samples arrive ~1 s apart; 5 s tolerates a small burst of
-// dropped frames without bleeding pause time into the active total.
-const runningGapMaxSeconds = 5.0
+// "running" samples before we stop counting the gap toward kcal. With 1 Hz
+// polling, samples arrive ~1 s apart; 15 s tolerates the P1's slower frame
+// rate (3-5 s/frame is common) and short BLE blips. Duration accounting no
+// longer uses this — it accumulates by window, not by per-frame dt.
+const runningGapMaxSeconds = 15.0
 
 // Config configures a Manager. All fields are required.
 type Config struct {
@@ -64,13 +65,48 @@ type runState struct {
 	totalDistanceM float64
 	totalSteps     int64
 	maxSpeedKmh    float64
-	activeSeconds  float64
 	kcalAccum      float64
+
+	// Active-duration accounting via windows. A window opens when the belt
+	// transitions to a running state and closes when it leaves. closedActiveS
+	// is the sum of completed windows; activeWindowStart is non-zero while a
+	// window is currently open. Total duration = closedActiveS + (now -
+	// activeWindowStart) when open. This is robust to slow BLE frame rates
+	// and brief pauses — far better than the previous dt-between-frames
+	// approach which lost the entire window when frames were spaced > 5 s.
+	closedActiveS     float64
+	activeWindowStart time.Time
 
 	// Per-tick state for the delta calculation.
 	lastRunningTs   time.Time // last wall time at which the belt was running
 	lastDevDistance float64   // device-reported distance at lastRunningTs
 	lastDevSteps    uint32    // device-reported steps at lastRunningTs
+
+	// Live snapshot mirrors. Tracked in-memory so CurrentSession() can answer
+	// without a store round-trip on every 1 s live-push tick.
+	lastSpeedKmh float64 // most recent frame.SpeedKmh
+	paused       bool    // true when the last frame was non-running but the session is still open
+	pauseCount   int64   // in-memory mirror of sessions.pause_count (also persisted via store)
+}
+
+// currentActiveSeconds returns the total active duration including any
+// currently-open running window evaluated at `now`.
+func (r *runState) currentActiveSeconds(now time.Time) float64 {
+	total := r.closedActiveS
+	if !r.activeWindowStart.IsZero() {
+		total += now.Sub(r.activeWindowStart).Seconds()
+	}
+	return total
+}
+
+// closeActiveWindow seals the current window into closedActiveS. Called
+// whenever the belt leaves a running state or the session itself ends.
+func (r *runState) closeActiveWindow(now time.Time) {
+	if r.activeWindowStart.IsZero() {
+		return
+	}
+	r.closedActiveS += now.Sub(r.activeWindowStart).Seconds()
+	r.activeWindowStart = time.Time{}
 }
 
 // NewManager wires a Manager. The logger is required; pass slog.Default() in tests.
@@ -93,14 +129,17 @@ func (m *Manager) HasOpenSession() bool {
 // under the Manager lock. Returns nil when no session is open. The HTTP
 // /status handler is the primary consumer.
 type CurrentSessionView struct {
-	UUID        string
-	StartedAt   time.Time
-	DurationS   int64
-	DistanceM   float64
-	Steps       int64
-	Kcal        float64
-	AvgSpeedKmh float64
-	MaxSpeedKmh float64
+	UUID            string
+	StartedAt       time.Time
+	DurationS       int64
+	DistanceM       float64
+	Steps           int64
+	Kcal            float64
+	AvgSpeedKmh     float64
+	MaxSpeedKmh     float64
+	CurrentSpeedKmh float64 // most recent frame.SpeedKmh; 0 when paused/stopped
+	Paused          bool    // last frame was non-running but session is still open
+	PauseCount      int64   // in-memory mirror of sessions.pause_count
 }
 
 // CurrentSession returns a snapshot of the open session, or nil if none.
@@ -110,19 +149,27 @@ func (m *Manager) CurrentSession() *CurrentSessionView {
 	if m.cur == nil {
 		return nil
 	}
+	active := m.cur.currentActiveSeconds(time.Now())
 	avg := 0.0
-	if m.cur.activeSeconds > 0 {
-		avg = (m.cur.totalDistanceM / 1000.0) / (m.cur.activeSeconds / 3600.0)
+	if active > 0 {
+		avg = (m.cur.totalDistanceM / 1000.0) / (active / 3600.0)
+	}
+	curSpeed := m.cur.lastSpeedKmh
+	if m.cur.paused {
+		curSpeed = 0
 	}
 	return &CurrentSessionView{
-		UUID:        m.cur.uuid,
-		StartedAt:   m.cur.startedAt,
-		DurationS:   int64(m.cur.activeSeconds),
-		DistanceM:   m.cur.totalDistanceM,
-		Steps:       m.cur.totalSteps,
-		Kcal:        m.cur.kcalAccum,
-		AvgSpeedKmh: avg,
-		MaxSpeedKmh: m.cur.maxSpeedKmh,
+		UUID:            m.cur.uuid,
+		StartedAt:       m.cur.startedAt,
+		DurationS:       int64(active),
+		DistanceM:       m.cur.totalDistanceM,
+		Steps:           m.cur.totalSteps,
+		Kcal:            m.cur.kcalAccum,
+		AvgSpeedKmh:     avg,
+		MaxSpeedKmh:     m.cur.maxSpeedKmh,
+		CurrentSpeedKmh: curSpeed,
+		Paused:          m.cur.paused,
+		PauseCount:      m.cur.pauseCount,
 	}
 }
 
@@ -168,7 +215,7 @@ func (m *Manager) Resume(ctx context.Context, now time.Time) error {
 	}
 	m.log.Info("session.resume",
 		"uuid", sess.UUID, "age_min", now.Sub(sess.StartedAt).Minutes(),
-		"distance_m", m.cur.totalDistanceM, "active_s", m.cur.activeSeconds)
+		"distance_m", m.cur.totalDistanceM, "active_s", m.cur.currentActiveSeconds(now))
 	return nil
 }
 
@@ -211,6 +258,7 @@ func (m *Manager) Ingest(ctx context.Context, frame ble.Status, now time.Time) e
 			if err := m.store.IncrementPauseCount(ctx, m.cur.sessionID); err != nil {
 				return err
 			}
+			m.cur.pauseCount++
 			m.log.Info("session.pause_resumed", "uuid", m.cur.uuid, "gap_s", gap.Seconds())
 		}
 	}
@@ -234,12 +282,18 @@ func (m *Manager) Ingest(ctx context.Context, frame ble.Status, now time.Time) e
 	// Update in-memory totals.
 	if isRunning {
 		m.applyRunningTick(frame.SpeedKmh, frame.Distance, frame.Steps, now)
+		m.cur.lastSpeedKmh = frame.SpeedKmh
+		m.cur.paused = false
 	} else {
-		// Non-running frame: drop the device-counter baseline so the next
-		// running frame starts a fresh delta window (the belt may have reset
-		// its counters between the two — gotcha #8).
+		// Non-running frame: close the active window (the seconds we've been
+		// running just became part of closedActiveS) and drop the device-
+		// counter baseline so the next running frame starts a fresh delta
+		// window (the belt may reset its counters across STANDBY — gotcha #8).
+		m.cur.closeActiveWindow(now)
 		m.cur.lastDevDistance = 0
 		m.cur.lastDevSteps = 0
+		m.cur.lastSpeedKmh = 0
+		m.cur.paused = true
 	}
 	return nil
 }
@@ -288,15 +342,19 @@ func (m *Manager) openLocked(ctx context.Context, now time.Time) error {
 }
 
 func (m *Manager) closeLocked(ctx context.Context, endedAt time.Time) error {
+	// Seal any still-open running window at the close time so its seconds
+	// are counted in the final duration.
+	m.cur.closeActiveWindow(endedAt)
+	active := m.cur.closedActiveS
 	totals := store.SessionTotals{
-		DurationS:   int64(m.cur.activeSeconds),
+		DurationS:   int64(active),
 		DistanceM:   m.cur.totalDistanceM,
 		Steps:       m.cur.totalSteps,
 		MaxSpeedKmh: m.cur.maxSpeedKmh,
 		Kcal:        m.cur.kcalAccum,
 	}
-	if m.cur.activeSeconds > 0 {
-		totals.AvgSpeedKmh = (m.cur.totalDistanceM / 1000.0) / (m.cur.activeSeconds / 3600.0)
+	if active > 0 {
+		totals.AvgSpeedKmh = (m.cur.totalDistanceM / 1000.0) / (active / 3600.0)
 	}
 	if err := m.store.CloseSession(ctx, m.cur.sessionID, endedAt, totals); err != nil {
 		return fmt.Errorf("close session: %w", err)
@@ -342,13 +400,19 @@ func (m *Manager) applyRunningTick(speedKmh, devDistance float64, devSteps uint3
 		m.cur.maxSpeedKmh = speedKmh
 	}
 
-	// Time + calories: only count the gap when the previous tick was also
-	// running and the two are within the polling jitter window. This naturally
-	// skips pause gaps without needing a separate "is this a resume?" branch.
+	// Open the active window on the first running tick of this burst.
+	// Subsequent ticks in the same window are no-ops here — the elapsed
+	// wall time accumulates implicitly between activeWindowStart and the
+	// next close (either a non-running frame or the session end).
+	if m.cur.activeWindowStart.IsZero() {
+		m.cur.activeWindowStart = ts
+	}
+
+	// Calories: still per-frame, with a generous cap so slow BLE polling
+	// (the belt sometimes emits at 3-5 s/frame) doesn't drop kcal silently.
 	if !m.cur.lastRunningTs.IsZero() {
 		dt := ts.Sub(m.cur.lastRunningTs).Seconds()
 		if dt > 0 && dt <= runningGapMaxSeconds {
-			m.cur.activeSeconds += dt
 			m.cur.kcalAccum += Kcal(speedKmh, m.cfg.WeightKg, dt)
 		}
 	}
@@ -364,7 +428,12 @@ func (m *Manager) replayLocked(ctx context.Context, sess *store.Session) error {
 		return fmt.Errorf("replay get session: %w", err)
 	}
 
-	m.cur = &runState{sessionID: sess.ID, uuid: sess.UUID, startedAt: sess.StartedAt}
+	m.cur = &runState{
+		sessionID:  sess.ID,
+		uuid:       sess.UUID,
+		startedAt:  sess.StartedAt,
+		pauseCount: sess.PauseCount,
+	}
 
 	for _, smp := range samples {
 		// #nosec G115 -- belt_state is a single wire byte (values 0..9, see ble.BeltState)
@@ -373,6 +442,9 @@ func (m *Manager) replayLocked(ctx context.Context, sess *store.Session) error {
 			// #nosec G115 -- steps round-trips through the device's native uint32 counter
 			m.applyRunningTick(smp.SpeedKmh, smp.DistanceM, uint32(smp.Steps), smp.Ts)
 		} else {
+			// Mirror Ingest: close the active window on each non-running
+			// sample so replay produces the same closedActiveS as live.
+			m.cur.closeActiveWindow(smp.Ts)
 			m.cur.lastDevDistance = 0
 			m.cur.lastDevSteps = 0
 		}
