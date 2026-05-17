@@ -425,6 +425,58 @@ func (s *Store) samplesFor(ctx context.Context, sessionID int64) ([]Sample, erro
 	return out, rows.Err()
 }
 
+// LastSample returns the most recent sample (any belt_state) for the
+// session. ok=false when the session has no samples yet. Used by the
+// manager's seed path to detect whether the last frame was a stop (so the
+// session should restart paused).
+func (s *Store) LastSample(ctx context.Context, sessionID int64) (Sample, bool, error) {
+	return s.scanOneSample(ctx, `
+		SELECT id, session_id, ts, belt_state, speed_kmh, distance_m, steps,
+		       mode, button, COALESCE(raw_frame_hex, '')
+		FROM samples WHERE session_id = ? ORDER BY ts DESC, id DESC LIMIT 1`,
+		sessionID,
+	)
+}
+
+// LastRunningSample returns the most recent sample whose belt_state is in
+// {2, 4} (the values for which ble.BeltState.IsRunning() is true). Used by
+// the manager's seed path to recover the device-counter baseline so the
+// next live frame computes a small delta against the last known counter
+// instead of wholesale-adding the current counter value.
+//
+// ok=false when the session has no running samples (an unusual state — the
+// session was opened on a running frame but only stopped frames followed).
+func (s *Store) LastRunningSample(ctx context.Context, sessionID int64) (Sample, bool, error) {
+	return s.scanOneSample(ctx, `
+		SELECT id, session_id, ts, belt_state, speed_kmh, distance_m, steps,
+		       mode, button, COALESCE(raw_frame_hex, '')
+		FROM samples WHERE session_id = ? AND belt_state IN (2, 4)
+		ORDER BY ts DESC, id DESC LIMIT 1`,
+		sessionID,
+	)
+}
+
+func (s *Store) scanOneSample(ctx context.Context, query string, args ...any) (Sample, bool, error) {
+	var smp Sample
+	var tsStr string
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(
+		&smp.ID, &smp.SessionID, &tsStr, &smp.BeltState,
+		&smp.SpeedKmh, &smp.DistanceM, &smp.Steps, &smp.Mode, &smp.Button,
+		&smp.RawFrameHex,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Sample{}, false, nil
+		}
+		return Sample{}, false, fmt.Errorf("scan sample: %w", err)
+	}
+	smp.Ts, err = parseTime(tsStr)
+	if err != nil {
+		return Sample{}, false, err
+	}
+	return smp, true, nil
+}
+
 // LastSampleTime returns the timestamp of the most recent sample for the given
 // session. The boolean is false when the session has no samples yet.
 func (s *Store) LastSampleTime(ctx context.Context, sessionID int64) (time.Time, bool, error) {

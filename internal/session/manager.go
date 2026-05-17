@@ -210,8 +210,9 @@ func (m *Manager) Resume(ctx context.Context, now time.Time) error {
 	}
 
 	if now.Sub(sess.StartedAt) > resumeMaxAge {
-		// Force-close: replay so totals are populated, then close at the last
-		// sample ts (or started_at if we never recorded a sample).
+		// Force-close: rebuild totals so the row has a sane close snapshot,
+		// then close at the last sample ts (or started_at if we never
+		// recorded a sample).
 		end, ok, err := m.store.LastSampleTime(ctx, sess.ID)
 		if err != nil {
 			return err
@@ -219,7 +220,7 @@ func (m *Manager) Resume(ctx context.Context, now time.Time) error {
 		if !ok {
 			end = sess.StartedAt
 		}
-		if err := m.replayLocked(ctx, sess); err != nil {
+		if err := m.rebuildFromHistoryLocked(ctx, sess); err != nil {
 			return err
 		}
 		m.log.Info("session.force_close_on_resume",
@@ -227,13 +228,26 @@ func (m *Manager) Resume(ctx context.Context, now time.Time) error {
 		return m.closeLocked(ctx, end)
 	}
 
-	if err := m.replayLocked(ctx, sess); err != nil {
+	if err := m.rebuildFromHistoryLocked(ctx, sess); err != nil {
 		return err
 	}
 	m.log.Info("session.resume",
 		"uuid", sess.UUID, "age_min", now.Sub(sess.StartedAt).Minutes(),
 		"distance_m", m.cur.totalDistanceM, "active_s", m.cur.currentActiveSeconds(now))
 	return nil
+}
+
+// rebuildFromHistoryLocked picks the right reconstruction strategy for an
+// open session that pre-exists this Manager instance:
+//   - Stored totals non-zero → seedFromStoredLocked: preserve the truth
+//     and seed baselines from the last sample.
+//   - Stored totals zero → replayLocked: the session was never closed (real
+//     crash mid-walk), so re-derive totals from the sample stream.
+func (m *Manager) rebuildFromHistoryLocked(ctx context.Context, sess *store.Session) error {
+	if sess.DurationS > 0 {
+		return m.seedFromStoredLocked(ctx, sess)
+	}
+	return m.replayLocked(ctx, sess)
 }
 
 // Ingest is called for every decoded status frame. It opens, extends, resumes,
@@ -409,19 +423,23 @@ func (m *Manager) openLocked(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-// resurrectLocked clears ended_at/synced_at on the row, replays samples to
-// rebuild totals so the next CloseSession overwrites with the correct sum,
-// and bumps pause_count to record the bridged gap.
+// resurrectLocked clears ended_at/synced_at on the row, rebuilds the
+// in-memory accumulators so the next live tick continues from the right
+// baseline, and bumps pause_count to record the bridged gap.
+//
+// Rebuild strategy: prefer stored totals (the truth at the previous close)
+// over re-running applyRunningTick over every sample, which would silently
+// drift away from what argo and the user actually saw. The branch lives in
+// rebuildFromHistoryLocked.
 func (m *Manager) resurrectLocked(ctx context.Context, sess *store.Session, now time.Time) error {
 	if err := m.store.ReopenSession(ctx, sess.ID); err != nil {
 		return fmt.Errorf("reopen session %s: %w", sess.UUID, err)
 	}
-	// Replay rebuilds the in-memory accumulators from persisted samples; the
-	// row's pause_count is incremented by ReopenSession above, so adjust the
-	// in-memory mirror to match what replay loaded + 1.
-	if err := m.replayLocked(ctx, sess); err != nil {
+	if err := m.rebuildFromHistoryLocked(ctx, sess); err != nil {
 		return err
 	}
+	// ReopenSession bumped the row's pause_count by 1; mirror in memory on
+	// top of whatever the seed/replay loaded.
 	m.cur.pauseCount++
 	m.log.Info("session.resurrect",
 		"uuid", sess.UUID,
@@ -507,6 +525,66 @@ func (m *Manager) applyRunningTick(speedKmh, devDistance float64, devSteps uint3
 		}
 	}
 	m.cur.lastRunningTs = ts
+}
+
+// seedFromStoredLocked builds m.cur from the session row's stored totals
+// (the truth at the previous close) and seeds the device-counter baseline
+// from the most-recent running sample so the next live frame computes a
+// small delta on top.
+//
+// This is the right path whenever stored totals exist. Re-running
+// applyRunningTick over every sample (replayLocked) is deterministic in
+// isolation but does NOT reproduce the original live totals: the live run
+// carried per-tick state across thousands of frames (counter trajectories
+// across brief stops, kcal dt-gating, window-close timing) that can't be
+// reconstructed from samples alone. Trusting the stored value preserves
+// whatever the user actually saw at close and avoids silent drift on
+// resurrect.
+//
+// Replay remains the right path for sessions that were truly never closed
+// (stored totals = 0) — typically a crash mid-walk.
+func (m *Manager) seedFromStoredLocked(ctx context.Context, sess *store.Session) error {
+	m.cur = &runState{
+		sessionID:      sess.ID,
+		uuid:           sess.UUID,
+		startedAt:      sess.StartedAt,
+		totalDistanceM: sess.DistanceM,
+		totalSteps:     sess.Steps,
+		maxSpeedKmh:    sess.MaxSpeedKmh,
+		kcalAccum:      sess.Kcal,
+		closedActiveS:  float64(sess.DurationS),
+		pauseCount:     sess.PauseCount,
+	}
+
+	lastRun, hasRunning, err := m.store.LastRunningSample(ctx, sess.ID)
+	if err != nil {
+		return fmt.Errorf("seed last running sample: %w", err)
+	}
+	if hasRunning {
+		m.cur.lastRunningTs = lastRun.Ts
+		m.cur.lastDevDistance = lastRun.DistanceM
+		// #nosec G115 -- steps round-trips through the device's native uint32 counter
+		m.cur.lastDevSteps = uint32(lastRun.Steps)
+		m.cur.lastSpeedKmh = lastRun.SpeedKmh
+	}
+
+	last, hasAny, err := m.store.LastSample(ctx, sess.ID)
+	if err != nil {
+		return fmt.Errorf("seed last sample: %w", err)
+	}
+	if hasAny {
+		// #nosec G115 -- belt_state is a single wire byte (values 0..9)
+		belt := ble.BeltState(last.BeltState)
+		if !belt.IsRunning() {
+			// Session is currently paused. Clear display speed but keep the
+			// dev-counter baselines from the last running sample — the
+			// clamp in applyRunningTick handles the STANDBY-reset case if
+			// the device counter actually wraps to zero.
+			m.cur.lastSpeedKmh = 0
+			m.cur.paused = true
+		}
+	}
+	return nil
 }
 
 // replayLocked rebuilds the in-memory accumulators from persisted samples.

@@ -373,6 +373,164 @@ func TestManager_ResumeBeyondMaxAgeForceCloses(t *testing.T) {
 	}
 }
 
+// --- seed-from-stored vs. replay -------------------------------------------
+
+// TestRebuild_PrefersStoredTotalsOverReplay: the production scenario that
+// caused the live-vs-history mismatch — a session was closed long ago with
+// stored totals N, then later got reopened locally (via resurrect on the
+// previous daemon run). On Resume, the new code must trust the stored
+// totals instead of replaying samples, because replay drifts: the live run
+// carried per-tick state (counter trajectory, dt-gated kcal, window-close
+// timing) that can't be reconstructed from samples alone.
+func TestRebuild_PrefersStoredTotalsOverReplay(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	base := time.Date(2026, 5, 17, 13, 0, 0, 0, time.UTC)
+
+	// Seed a session manually: open, append many samples, close with totals
+	// that DON'T match what a fresh replay would compute (simulating drift).
+	id, err := st.OpenSession(ctx, "seed-truth", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Append running samples 0..9 with monotonic device counters.
+	for i := 0; i <= 9; i++ {
+		ts := base.Add(time.Duration(i) * time.Second)
+		if _, err := st.AppendSample(ctx, store.Sample{
+			SessionID: id, Ts: ts, BeltState: 2, SpeedKmh: 4.0,
+			DistanceM: float64(i) * 10, Steps: int64(i) * 15,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One stopped frame at t=20s.
+	if _, err := st.AppendSample(ctx, store.Sample{
+		SessionID: id, Ts: base.Add(20 * time.Second), BeltState: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Close with TOTALS that diverge from what replay would compute, mimicking
+	// the production case where the old live-accumulator had different values
+	// than a fresh sample replay.
+	storedDistance := 999.0
+	storedSteps := int64(12345)
+	storedDuration := int64(456)
+	if err := st.CloseSession(ctx, id, base.Add(20*time.Second), store.SessionTotals{
+		DurationS: storedDuration, DistanceM: storedDistance, Steps: storedSteps,
+		AvgSpeedKmh: 4.0, MaxSpeedKmh: 4.0, Kcal: 50.0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Reopen so the row is OPEN with stored totals — the state that triggered
+	// the bug in prod.
+	if err := st.ReopenSession(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fresh Manager, Resume.
+	m := newTestManager(t, st)
+	if err := m.Resume(ctx, base.Add(30*time.Second)); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if !m.HasOpenSession() {
+		t.Fatal("Resume must adopt the open session")
+	}
+
+	// CRITICAL: stored totals must be preserved verbatim, not recomputed.
+	if m.cur.totalDistanceM != storedDistance {
+		t.Errorf("distance = %g, want %g (stored, not replayed)", m.cur.totalDistanceM, storedDistance)
+	}
+	if m.cur.totalSteps != storedSteps {
+		t.Errorf("steps = %d, want %d (stored, not replayed)", m.cur.totalSteps, storedSteps)
+	}
+	if int64(m.cur.closedActiveS) != storedDuration {
+		t.Errorf("closedActiveS = %g, want %d (stored, not replayed)", m.cur.closedActiveS, storedDuration)
+	}
+
+	// Device-counter baselines must come from the last running sample (i=9
+	// → distance=90, steps=135), not zero. Otherwise the next live frame
+	// would wholesale-add the device counter to the stored total.
+	if m.cur.lastDevDistance != 90 {
+		t.Errorf("lastDevDistance = %g, want 90 (from last running sample)", m.cur.lastDevDistance)
+	}
+	if m.cur.lastDevSteps != 135 {
+		t.Errorf("lastDevSteps = %d, want 135", m.cur.lastDevSteps)
+	}
+
+	// Last sample was a stop → paused mirror.
+	if !m.cur.paused {
+		t.Error("paused should be true (last sample was non-running)")
+	}
+}
+
+// TestRebuild_NewFrameAddsSmallDelta: after a seed-from-stored, the very
+// next live frame must produce a small delta (not double-count the device
+// counter onto the stored total). This is the exact failure mode that
+// would have happened in prod if seed used lastDevX=0.
+func TestRebuild_NewFrameAddsSmallDelta(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	base := time.Date(2026, 5, 17, 13, 0, 0, 0, time.UTC)
+
+	id, _ := st.OpenSession(ctx, "delta-check", base)
+	_, _ = st.AppendSample(ctx, store.Sample{
+		SessionID: id, Ts: base, BeltState: 2, SpeedKmh: 4.0,
+		DistanceM: 100, Steps: 200,
+	})
+	_ = st.CloseSession(ctx, id, base.Add(time.Second), store.SessionTotals{
+		DurationS: 60, DistanceM: 100, Steps: 200, MaxSpeedKmh: 4.0,
+	})
+	_ = st.ReopenSession(ctx, id)
+
+	m := newTestManager(t, st)
+	if err := m.Resume(ctx, base.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	// New live frame: device counter is now 105 (small forward delta from 100).
+	if err := m.Ingest(ctx, running(4.0, 105, 215), base.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	// Stored 100 + delta(5) = 105, NOT 100 + 105 = 205.
+	if m.cur.totalDistanceM != 105 {
+		t.Errorf("post-ingest distance = %g, want 105 (stored 100 + delta 5)", m.cur.totalDistanceM)
+	}
+	if m.cur.totalSteps != 215 {
+		t.Errorf("post-ingest steps = %d, want 215", m.cur.totalSteps)
+	}
+}
+
+// TestRebuild_ReplaysWhenStoredZero: a session that was never closed (real
+// crash mid-session) has stored totals = 0, and Resume must replay to
+// recover them.
+func TestRebuild_ReplaysWhenStoredZero(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	base := time.Date(2026, 5, 17, 13, 0, 0, 0, time.UTC)
+
+	// Open + a few running samples, no close (crash-mid-session shape).
+	id, _ := st.OpenSession(ctx, "crash-victim", base)
+	for i := 0; i <= 2; i++ {
+		_, _ = st.AppendSample(ctx, store.Sample{
+			SessionID: id, Ts: base.Add(time.Duration(i) * time.Second),
+			BeltState: 2, SpeedKmh: 4.0,
+			DistanceM: float64(i) * 10, Steps: int64(i) * 12,
+		})
+	}
+
+	m := newTestManager(t, st)
+	if err := m.Resume(ctx, base.Add(10*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	// Replay's accumulator: deltas across 3 frames → distance 20, steps 24.
+	if m.cur.totalDistanceM != 20 {
+		t.Errorf("replay distance = %g, want 20 (replay must run when stored is zero)", m.cur.totalDistanceM)
+	}
+	if m.cur.totalSteps != 24 {
+		t.Errorf("replay steps = %d, want 24", m.cur.totalSteps)
+	}
+}
+
 // --- resurrection & clean-shutdown continuity ------------------------------
 
 // TestEnsureSession_ResurrectsRecentlyClosed: a session that closed via the
