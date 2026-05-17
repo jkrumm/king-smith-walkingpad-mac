@@ -1,0 +1,41 @@
+# Build artifacts
+/bin/
+/dist/
+/king-smith-walkingpad-mac
+/King-Smith-WalkingPad-Mac.app
+*.test
+*.out
+coverage.*
+
+# Go
+vendor/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local config & runtime state
+.env
+.env.local
+*.local
+config.local.toml
+
+# Local data (development) — production lives in ~/Library/Application Support/king-smith-walkingpad-mac/
+/data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Raycast
+raycast/node_modules/
+raycast/dist/
+raycast/.raycast/
+
+# Claude Code transcripts / sub-agent output
+.claude/cache/
