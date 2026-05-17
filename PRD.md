@@ -343,7 +343,7 @@ Listens on `127.0.0.1:7706` (configurable). Loopback-only; no TLS. Bearer-token 
 |-|-|-|-|
 | `GET /health` | — | `{"ok":true,"version":"…"}` | Unauthenticated. |
 | `GET /status` | — | live status object (see below) | Last frame from BLE + current session summary. |
-| `POST /start` | `{"speed_kmh":3.5}` (optional) | `{"ok":true}` | Switches to manual mode, sets speed, sends start. |
+| `POST /start` | `{"speed_kmh":3.5}` (optional) | `{"ok":true}` | Switches to manual mode, sets speed, sends start. Idempotent: when the belt is already active or ramping, /start short-circuits to /speed (or a no-op if no speed given) — the raw start frame halts a running P1. |
 | `POST /stop` | — | `{"ok":true}` | `set_speed(0)`. |
 | `POST /speed` | `{"speed_kmh":4.0}` | `{"ok":true}` | 0.5–6.0 inclusive; rounded to 0.1. |
 | `POST /pref/start-speed` | `{"speed_kmh":2.0}` | `{"ok":true}` | Writes PREFS_START_SPEED. |

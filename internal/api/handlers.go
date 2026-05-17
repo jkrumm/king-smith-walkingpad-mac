@@ -85,6 +85,24 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		}
 		speed = v
 	}
+
+	// If the belt is already active or ramping up, the start sequence sent by
+	// Controller.Start halts it (verified on the user's P1, 2026-05-17). Treat
+	// /start as idempotent: when running we either adjust the speed or no-op,
+	// instead of toggling the belt off. This keeps the menu-bar safe even if
+	// the cached UI state is stale.
+	frame, _, connected := s.deps.Status.LastFrame()
+	if connected && (frame.State.IsRunning() || frame.State.IsStarting()) {
+		if speed > 0 {
+			if err := s.deps.Controller.SetSpeed(r.Context(), speed); err != nil {
+				writeControllerError(w, err)
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, okResponse{OK: true})
+		return
+	}
+
 	if err := s.deps.Controller.Start(r.Context(), speed); err != nil {
 		writeControllerError(w, err)
 		return

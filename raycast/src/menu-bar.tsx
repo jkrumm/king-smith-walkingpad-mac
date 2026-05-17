@@ -53,12 +53,22 @@ export default function MenuBar() {
     }
   };
 
-  const onPresetSpeed = (v: number) => {
-    if (running)
+  // Re-fetch live status *before* deciding the action so a stale cache
+  // doesn't make us call /start on an already-running belt. The daemon is
+  // also defensive about this (see /start handler) but doing both means the
+  // toast wording matches what actually happened.
+  const onPresetSpeed = async (v: number) => {
+    let live = data;
+    try {
+      live = await api.status();
+    } catch {
+      // network blip — fall back to the cached snapshot.
+    }
+    const live_running = isRunning(live?.belt_state);
+    if (live_running) {
       return fire(`Speed → ${v.toFixed(1)} km/h`, () => api.setSpeed(v));
-    if (stopped)
-      return fire(`Start at ${v.toFixed(1)} km/h`, () => api.start(v));
-    return fire(`Speed → ${v.toFixed(1)} km/h`, () => api.setSpeed(v));
+    }
+    return fire(`Start at ${v.toFixed(1)} km/h`, () => api.start(v));
   };
 
   const sd = stateDisplay(connected, data?.belt_state);

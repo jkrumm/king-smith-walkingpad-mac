@@ -5,6 +5,11 @@ run:
   tests: true
 
 linters:
+  exclusions:
+    paths:
+      # `flatted` (an npm dep) ships a vendored Go file inside node_modules.
+      # Not our code — exclude it so the linter doesn't fail on third-party.
+      - raycast/node_modules
   default: standard
   enable:
     - bodyclose

@@ -299,6 +299,37 @@ func TestStart_NoBody(t *testing.T) {
 	}
 }
 
+// /start on an already-running belt must NOT fire the start sequence — that
+// halts the belt on real P1 hardware. With a speed it adjusts; without one it
+// returns 200 and does nothing.
+func TestStart_AlreadyRunning_AdjustsSpeed(t *testing.T) {
+	r := newRig(t, "")
+	r.status.connected = true
+	r.status.frame.State = ble.BeltActive
+	if got, _ := r.do(t, "POST", "/start", map[string]any{"speed_kmh": 3.0}); got != 200 {
+		t.Fatalf("status = %d", got)
+	}
+	if len(r.ctrl.startVals) != 0 {
+		t.Errorf("Start should NOT be called when belt is running, got %v", r.ctrl.startVals)
+	}
+	if len(r.ctrl.speedVals) != 1 || r.ctrl.speedVals[0] != 3.0 {
+		t.Errorf("SetSpeed vals = %v, want [3.0]", r.ctrl.speedVals)
+	}
+}
+
+func TestStart_AlreadyRunning_NoSpeed_NoOp(t *testing.T) {
+	r := newRig(t, "")
+	r.status.connected = true
+	r.status.frame.State = ble.BeltActive
+	if got, _ := r.do(t, "POST", "/start", nil); got != 200 {
+		t.Fatalf("status = %d", got)
+	}
+	if len(r.ctrl.startVals) != 0 || len(r.ctrl.speedVals) != 0 {
+		t.Errorf("expected no controller calls, got start=%v speed=%v",
+			r.ctrl.startVals, r.ctrl.speedVals)
+	}
+}
+
 func TestStop(t *testing.T) {
 	r := newRig(t, "")
 	if got, _ := r.do(t, "POST", "/stop", nil); got != 200 {

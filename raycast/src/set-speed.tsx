@@ -64,6 +64,11 @@ export default function SetSpeed() {
 }
 
 function SpeedActions({ value, running }: { value: number; running: boolean }) {
+  // The cached `running` flag drives the label so the user can see what the
+  // click *will* do. The actual action re-fetches live status, because if the
+  // cache is stale (e.g. the user just started walking) firing /start on a
+  // running belt would halt it. The daemon also short-circuits this, but
+  // doing it here means the toast wording is honest.
   const primaryTitle = running
     ? `Set Speed → ${value.toFixed(1)} km/h`
     : `Start at ${value.toFixed(1)} km/h`;
@@ -73,15 +78,25 @@ function SpeedActions({ value, running }: { value: number; running: boolean }) {
         title={primaryTitle}
         icon={running ? Icon.Gauge : Icon.Play}
         onAction={async () => {
+          let isLive = running;
           try {
-            if (running) await api.setSpeed(value);
+            const fresh = await api.status();
+            isLive = isRunning(fresh.belt_state);
+          } catch {
+            // network blip — fall back to the prop.
+          }
+          const liveTitle = isLive
+            ? `Set Speed → ${value.toFixed(1)} km/h`
+            : `Start at ${value.toFixed(1)} km/h`;
+          try {
+            if (isLive) await api.setSpeed(value);
             else await api.start(value);
             await closeMainWindow();
-            await showHUD(`✓ ${primaryTitle}`);
+            await showHUD(`✓ ${liveTitle}`);
           } catch (e) {
             await showToast({
               style: Toast.Style.Failure,
-              title: primaryTitle,
+              title: liveTitle,
               message: (e as Error).message,
             });
           }
