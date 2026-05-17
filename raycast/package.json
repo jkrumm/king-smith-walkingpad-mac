@@ -52,6 +52,13 @@
       "description": "Decrease belt speed by the Speed Step (default 0.5 km/h). Bind a global hotkey in Raycast settings — recommended ⌥-",
       "mode": "no-view",
       "keywords": ["walkingpad", "slower", "down", "speed"]
+    },
+    {
+      "name": "toggle",
+      "title": "Start or Stop",
+      "description": "Toggle the belt: running → Stop, idle → Start at the Default Start Speed. Bind a global hotkey in Raycast settings — recommended ⌥*",
+      "mode": "no-view",
+      "keywords": ["walkingpad", "toggle", "start", "stop", "play", "pause"]
     }
   ],
   "preferences": [
@@ -78,6 +85,14 @@
       "type": "textfield",
       "required": false,
       "default": "0.5"
+    },
+    {
+      "name": "defaultStartSpeed",
+      "title": "Default Start Speed",
+      "description": "km/h used when the menu-bar Start button or the Start/Stop toggle command starts the belt without a chosen speed. Range 0.5 – 6.0.",
+      "type": "textfield",
+      "required": false,
+      "default": "3.0"
     }
   ],
   "engines": {

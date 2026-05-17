@@ -9,7 +9,13 @@ import {
   Toast,
 } from "@raycast/api";
 import { useMemo } from "react";
-import { api, clampSpeed, SPEED_GRID, speedStep } from "./lib/api";
+import {
+  api,
+  clampSpeed,
+  defaultStartSpeed,
+  SPEED_GRID,
+  speedStep,
+} from "./lib/api";
 import {
   formatDistance,
   formatDuration,
@@ -105,10 +111,14 @@ export default function MenuBar() {
       {(connected || !known) && (
         <MenuBarExtra.Section title="Belt">
           <MenuBarExtra.Item
-            title="Start"
+            title={`Start at ${defaultStartSpeed().toFixed(1)} km/h`}
             icon={{ source: Icon.Play, tintColor: Color.Green }}
             shortcut={{ modifiers: ["cmd"], key: "return" }}
-            onAction={() => fire("Started", () => api.start())}
+            onAction={() =>
+              fire(`Started at ${defaultStartSpeed().toFixed(1)} km/h`, () =>
+                api.start(defaultStartSpeed()),
+              )
+            }
           />
           <MenuBarExtra.Item
             title="Stop"

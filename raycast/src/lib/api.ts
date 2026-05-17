@@ -13,6 +13,7 @@ interface Prefs {
   baseUrl: string;
   apiToken: string;
   speedStep: string;
+  defaultStartSpeed: string;
 }
 
 // 0.5-step grid from 1.0 to 6.0 km/h — the canonical preset list shared by
@@ -41,6 +42,15 @@ export function authHeaders(): Record<string, string> {
 export function speedStep(): number {
   const n = Number(prefs().speedStep);
   return Number.isFinite(n) && n > 0 ? n : 0.5;
+}
+
+// Speed used by every Raycast Start surface that doesn't take an explicit
+// value (toggle hotkey, menu-bar Start, controller Start). Defaults to 3.0
+// km/h — a brisk-but-comfortable walking pace — and is user-overridable in
+// extension preferences.
+export function defaultStartSpeed(): number {
+  const n = Number(prefs().defaultStartSpeed);
+  return Number.isFinite(n) && n >= 0.5 && n <= 6.0 ? clampSpeed(n) : 3.0;
 }
 
 // Clamp + round any user-driven speed before POSTing so we never trigger a 400.

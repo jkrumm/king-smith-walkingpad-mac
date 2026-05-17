@@ -12,7 +12,13 @@ import {
   useNavigation,
 } from "@raycast/api";
 import { useCallback, useMemo } from "react";
-import { api, clampSpeed, SPEED_GRID, speedStep } from "./lib/api";
+import {
+  api,
+  clampSpeed,
+  defaultStartSpeed,
+  SPEED_GRID,
+  speedStep,
+} from "./lib/api";
 import {
   asImage,
   barChart,
@@ -73,10 +79,12 @@ export default function Controller() {
     [status],
   );
 
-  const onStart = (speed?: number) =>
-    runAction(`Start${speed ? ` at ${speed.toFixed(1)} km/h` : ""}`, () =>
-      api.start(speed),
-    );
+  const onStart = (speed?: number) => {
+    // Fall back to the user's Default Start Speed preference when no
+    // explicit value was picked (e.g. the bare Start action / ⌘↩).
+    const v = speed ?? defaultStartSpeed();
+    return runAction(`Start at ${v.toFixed(1)} km/h`, () => api.start(v));
+  };
   const onStop = () => runAction("Stop", () => api.stop());
   const onSetSpeed = (v: number) =>
     runAction(`Set Speed → ${v.toFixed(1)} km/h`, () => api.setSpeed(v));
