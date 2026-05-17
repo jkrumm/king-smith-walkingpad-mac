@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
@@ -159,6 +160,7 @@ func runConnect(ctx context.Context, args []string) int {
 	scanTimeout := fs.Duration("scan-timeout", 8*time.Second, "scan timeout when -addr is empty")
 	pollInterval := fs.Duration("poll", 1*time.Second, "ask_stats poll cadence (PRD default: 1s)")
 	duration := fs.Duration("duration", 0, "auto-disconnect after this duration; 0 = run until Ctrl-C")
+	raw := fs.Bool("raw", false, "append the raw 20-byte status frame to each line (for protocol reverse-engineering)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -190,9 +192,13 @@ func runConnect(ctx context.Context, args []string) int {
 		}
 		lastFrame = now
 		mu.Unlock()
-		_, _ = fmt.Fprintf(os.Stdout,
-			"[%s] state=%-8s mode=%-7s speed=%4.1f km/h time=%6s dist=%7.0f m steps=%5d btn=%d\n",
-			now.Format("15:04:05.000"), s.State, s.Mode, s.SpeedKmh, s.Time, s.Distance, s.Steps, s.Button)
+		line := fmt.Sprintf(
+			"[%s] state=%-8s(b=%02x) mode=%-7s speed=%4.1f km/h time=%6s dist=%7.0f m steps=%5d btn=%d",
+			now.Format("15:04:05.000"), s.State, s.Raw[2], s.Mode, s.SpeedKmh, s.Time, s.Distance, s.Steps, s.Button)
+		if *raw {
+			line += " raw=" + hex.EncodeToString(s.Raw[:])
+		}
+		_, _ = fmt.Fprintln(os.Stdout, line)
 	}
 	onErr := func(err error) {
 		mu.Lock()
