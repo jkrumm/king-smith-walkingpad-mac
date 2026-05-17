@@ -1,10 +1,11 @@
-// Package main is the entrypoint for the king-smith-walkingpad-mac daemon.
+// Package main is the entrypoint for the WalkingPad daemon.
 //
 // The daemon runs as a macOS LaunchAgent, owns the BLE connection to the
 // KingSmith WalkingPad, persists session data to a local SQLite store, and
 // exposes a localhost HTTP API for the Raycast extension and other clients.
 //
-// See PRD.md for the full design.
+// The binary is named `walkingpad`; the repo and Go module keep
+// `king-smith-walkingpad-mac` for SEO. See PRD.md for the full design.
 package main
 
 import (
@@ -55,10 +56,10 @@ func dispatch(ctx context.Context, cmd string, args []string) int {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `king-smith-walkingpad-mac %s
+	fmt.Fprintf(os.Stderr, `walkingpad %s
 
 Usage:
-  king-smith-walkingpad-mac <command> [flags]
+  walkingpad <command> [flags]
 
 Commands:
   scan       Discover nearby WalkingPad devices
@@ -66,7 +67,7 @@ Commands:
   help       Show this help
 
 For BLE access on macOS, run from inside the .app bundle:
-  /Applications/King-Smith-WalkingPad-Mac.app/Contents/MacOS/king-smith-walkingpad-mac scan
+  /Applications/WalkingPad.app/Contents/MacOS/walkingpad scan
 `, Version)
 }
 
@@ -94,7 +95,7 @@ no WalkingPad devices found after %s.
 Common causes:
   - You are running the bare binary instead of the .app bundle.
     macOS silently denies CoreBluetooth without a bundled Info.plist.
-    Use: /Applications/King-Smith-WalkingPad-Mac.app/Contents/MacOS/king-smith-walkingpad-mac scan
+    Use: /Applications/WalkingPad.app/Contents/MacOS/walkingpad scan
   - Bluetooth is off (System Settings → Bluetooth).
   - The WalkingPad is off, asleep, or out of range.
   - First-run permission prompt has not been accepted yet — check

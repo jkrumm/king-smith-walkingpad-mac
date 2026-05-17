@@ -1,10 +1,14 @@
 # king-smith-walkingpad-mac — LaunchAgent + Raycast extension for the KingSmith WalkingPad P1
 # See PRD.md for the full design; this Makefile is the operator interface.
+#
+# Naming: the repo (and Go module) keep the long form `king-smith-walkingpad-mac`
+# for SEO; everything user-facing is just `WalkingPad` / `walkingpad`.
 
-BINARY        := king-smith-walkingpad-mac
-APP_NAME      := King-Smith-WalkingPad-Mac
-PKG           := github.com/jkrumm/$(BINARY)
-CMD_DIR       := ./cmd/$(BINARY)
+REPO          := king-smith-walkingpad-mac
+BINARY        := walkingpad
+APP_NAME      := WalkingPad
+PKG           := github.com/jkrumm/$(REPO)
+CMD_DIR       := ./cmd/$(REPO)
 BIN_DIR       := ./bin
 APP_BUNDLE    := $(BIN_DIR)/$(APP_NAME).app
 APP_INSTALL   := /Applications/$(APP_NAME).app
@@ -13,7 +17,7 @@ PLIST_SRC     := ./scripts/$(PLIST_LABEL).plist
 PLIST_DST     := $(HOME)/Library/LaunchAgents/$(PLIST_LABEL).plist
 LOG_OUT       := /tmp/$(BINARY).log
 LOG_ERR       := /tmp/$(BINARY).err
-DATA_DIR      := $(HOME)/Library/Application Support/$(BINARY)
+DATA_DIR      := $(HOME)/Library/Application Support/$(APP_NAME)
 
 VERSION       := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS       := -ldflags "-X main.Version=$(VERSION) -s -w"
@@ -46,7 +50,7 @@ lint: ## run static analysis (requires golangci-lint)
 	@which golangci-lint > /dev/null || (echo "install: brew install golangci-lint" && exit 1)
 	golangci-lint run ./...
 
-build-app: build ## wrap the binary into King-Smith-WalkingPad-Mac.app (required for macOS Bluetooth)
+build-app: build ## wrap the binary into WalkingPad.app (required for macOS Bluetooth)
 	@test -x ./scripts/build-app-bundle.sh || (echo "missing ./scripts/build-app-bundle.sh — write it first (see PRD §17.3 step 2)" && exit 1)
 	./scripts/build-app-bundle.sh $(BIN_DIR)/$(BINARY) $(VERSION) $(APP_BUNDLE)
 	@echo "built $(APP_BUNDLE)"

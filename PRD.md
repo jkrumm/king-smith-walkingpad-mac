@@ -4,6 +4,8 @@
 **Owner:** Johannes Krumm.
 **License:** AGPL-3.0.
 
+**Naming.** The repo and Go module keep the long form `king-smith-walkingpad-mac` for discoverability. Everything user-facing — the macOS `.app` bundle, the CLI binary, the LaunchAgent label, the bundle identifier, the data directory, log paths, and the Raycast extension — is the short form `WalkingPad` / `walkingpad`. The Go source layout (`cmd/king-smith-walkingpad-mac/…`) still uses the repo name.
+
 ---
 
 ## 1. Problem & Goals
@@ -53,7 +55,7 @@ The KingSmith WalkingPad P1 ships with the "KS Fit" mobile app and a hardware re
 │                   │ HTTP localhost:7706 (token-auth optional)    │
 │                   ▼                                              │
 │  ┌─────────────────────────────────────────────────────────────┐ │
-│  │ king-smith-walkingpad-mac (Go, LaunchAgent)                 │ │
+│  │ WalkingPad (Go daemon, LaunchAgent)                         │ │
 │  │   ┌────────────┐  ┌────────────┐  ┌────────────┐            │ │
 │  │   │ BLE Client │──│ Session    │──│ SQLite     │            │ │
 │  │   │ tinygo-x   │  │ Manager    │  │ Store      │            │ │
@@ -231,7 +233,7 @@ king-smith-walkingpad-mac/
 │   │   └── lib/api.ts
 │   └── README.md
 ├── scripts/
-│   ├── com.jkrumm.king-smith-walkingpad-mac.plist
+│   ├── com.jkrumm.walkingpad.plist
 │   ├── build-app-bundle.sh         // wraps binary into .app with Info.plist
 │   └── Info.plist.tmpl
 ├── Makefile
@@ -246,7 +248,7 @@ king-smith-walkingpad-mac/
 
 ## 6. SQLite schema
 
-Stored at `~/Library/Application Support/king-smith-walkingpad-mac/db.sqlite`. WAL mode enabled.
+Stored at `~/Library/Application Support/WalkingPad/db.sqlite`. WAL mode enabled.
 
 ```sql
 -- v1
@@ -453,7 +455,7 @@ export const walkingPadSessions = argoSchema.table('walking_pad_sessions', {
   maxSpeedKmh: doublePrecision('max_speed_kmh').notNull(),
   kcal: doublePrecision('kcal').notNull(),
   pauseCount: integer('pause_count').notNull().default(0),
-  source: text('source').notNull().default('king-smith-walkingpad-mac'),
+  source: text('source').notNull().default('walkingpad'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 ```
@@ -479,7 +481,7 @@ Endpoints (under bearer auth, tag `Walking Pad`):
 
 ## 11. Configuration
 
-TOML file at `~/Library/Application Support/king-smith-walkingpad-mac/config.toml`. All fields optional with sensible defaults.
+TOML file at `~/Library/Application Support/WalkingPad/config.toml`. All fields optional with sensible defaults.
 
 ```toml
 [device]
@@ -514,11 +516,11 @@ Resolution order: env vars (`KSWP_*`) override TOML override defaults.
 
 CoreBluetooth on macOS 11+ requires the calling process to be a bundled `.app` with `Info.plist` keys `NSBluetoothAlwaysUsageDescription` and `NSBluetoothPeripheralUsageDescription`. **A bare CLI binary placed anywhere on `$PATH` (`/opt/homebrew/bin`, `/usr/local/bin`, etc.) will be silently denied access — `Scan()` returns no devices and there is no error.** Verified in tim-oster's repo: their build pipeline wraps the Go binary in a `.app` bundle.
 
-**Therefore: we do not install a bare binary at all.** The only install target is `/Applications/King-Smith-WalkingPad-Mac.app`. The Go binary lives at `Contents/MacOS/king-smith-walkingpad-mac` inside the bundle, and is invoked directly from there by the LaunchAgent. No symlinks to `$PATH`. Users who want a CLI from Terminal can alias to the bundled binary path themselves.
+**Therefore: we do not install a bare binary at all.** The only install target is `/Applications/WalkingPad.app`. The Go binary lives at `Contents/MacOS/walkingpad` inside the bundle, and is invoked directly from there by the LaunchAgent. No symlinks to `$PATH`. Users who want a CLI from Terminal can alias to the bundled binary path themselves.
 
 ### Deployment
 
-- `make install` builds `King-Smith-WalkingPad-Mac.app` via `scripts/build-app-bundle.sh`, copies it to `/Applications/`, and writes a LaunchAgent plist that invokes `/Applications/King-Smith-WalkingPad-Mac.app/Contents/MacOS/king-smith-walkingpad-mac`.
+- `make install` builds `WalkingPad.app` via `scripts/build-app-bundle.sh`, copies it to `/Applications/`, and writes a LaunchAgent plist that invokes `/Applications/WalkingPad.app/Contents/MacOS/walkingpad`.
 - First launch triggers the macOS Bluetooth-permission prompt. User must accept once.
 - The `.app` is unsigned in v1 (Gatekeeper requires user to right-click → Open the first time). Code-signing/notarisation is a v2 polish item.
 
@@ -529,7 +531,7 @@ CoreBluetooth on macOS 11+ requires the calling process to be a bundled `.app` w
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleIdentifier</key>          <string>com.jkrumm.king-smith-walkingpad-mac</string>
+  <key>CFBundleIdentifier</key>          <string>com.jkrumm.walkingpad</string>
   <key>CFBundleName</key>                <string>King-Smith-WalkingPad-Mac</string>
   <key>CFBundleExecutable</key>          <string>king-smith-walkingpad-mac</string>
   <key>CFBundleVersion</key>             <string>__VERSION__</string>
@@ -548,23 +550,23 @@ CoreBluetooth on macOS 11+ requires the calling process to be a bundled `.app` w
 
 ## 13. LaunchAgent
 
-`scripts/com.jkrumm.king-smith-walkingpad-mac.plist`:
+`scripts/com.jkrumm.walkingpad.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key>     <string>com.jkrumm.king-smith-walkingpad-mac</string>
+  <key>Label</key>     <string>com.jkrumm.walkingpad</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Applications/King-Smith-WalkingPad-Mac.app/Contents/MacOS/king-smith-walkingpad-mac</string>
+    <string>/Applications/WalkingPad.app/Contents/MacOS/walkingpad</string>
     <string>serve</string>
   </array>
   <key>RunAtLoad</key>      <true/>
   <key>KeepAlive</key>      <true/>
-  <key>StandardOutPath</key><string>/tmp/king-smith-walkingpad-mac.log</string>
-  <key>StandardErrorPath</key><string>/tmp/king-smith-walkingpad-mac.err</string>
+  <key>StandardOutPath</key><string>/tmp/walkingpad.log</string>
+  <key>StandardErrorPath</key><string>/tmp/walkingpad.err</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key><string>__HOME__</string>
@@ -601,7 +603,7 @@ Crack the P1 BLE protocol end-to-end. No persistence, no HTTP, no Raycast.
 - `frames` package complete, unit-tested.
 - Verified macOS .app bundle + Bluetooth permission flow.
 
-**Exit criterion:** I can run `make build && ./bin/king-smith-walkingpad-mac connect` and see live frames stream from my P1 for ≥60 s with no drops.
+**Exit criterion:** I can run `make build && ./bin/walkingpad connect` and see live frames stream from my P1 for ≥60 s with no drops.
 
 ### Milestone 1 — MVP
 
@@ -670,7 +672,7 @@ Everything from POC plus:
    git clone https://github.com/tim-oster/walkingpad.git     /tmp/walkingpad-research/tim-oster
    git clone https://github.com/mcdax/walkingpad-controller.git /tmp/walkingpad-research/mcdax
    ```
-3. **Sanity check the build:** `make build && make help`. Should produce `./bin/king-smith-walkingpad-mac` and print 17 targets.
+3. **Sanity check the build:** `make build && make help`. Should produce `./bin/walkingpad` and print 17 targets.
 4. **Check git state:** `git status` and `git log --oneline -5`. The initial commit should contain the skeleton + docs.
 
 ### 17.2 Operating principles (non-negotiable)
@@ -687,7 +689,7 @@ These are inherited from the user's global `~/.claude/CLAUDE.md` and reinforced 
 
 ### 17.3 The POC plan — Milestone 0
 
-The single exit criterion: `./bin/king-smith-walkingpad-mac connect` streams live status frames from the actual P1 for ≥60 seconds with no drops, on the user's Mac (Apple Silicon, macOS 26). Do not declare the POC done until this is verified on hardware.
+The single exit criterion: `./bin/walkingpad connect` streams live status frames from the actual P1 for ≥60 seconds with no drops, on the user's Mac (Apple Silicon, macOS 26). Do not declare the POC done until this is verified on hardware.
 
 Ordered steps, each its own commit:
 
@@ -706,11 +708,11 @@ Ordered steps, each its own commit:
 - Write `scripts/Info.plist.tmpl` per PRD §12.
 - Write `scripts/build-app-bundle.sh` that:
   1. Takes a built binary path and a version string.
-  2. Creates `King-Smith-WalkingPad-Mac.app/Contents/{MacOS,Resources}`.
+  2. Creates `WalkingPad.app/Contents/{MacOS,Resources}`.
   3. Substitutes `__VERSION__` into `Info.plist`.
-  4. Copies the binary into `Contents/MacOS/king-smith-walkingpad-mac`.
+  4. Copies the binary into `Contents/MacOS/walkingpad`.
 - Add a `make build-app` target that runs `build` then `build-app-bundle.sh`.
-- Smoke-test: `make build-app && open King-Smith-WalkingPad-Mac.app` — the binary should be invoked. (It'll print the skeleton stderr line and exit; that's fine.)
+- Smoke-test: `make build-app && open WalkingPad.app` — the binary should be invoked. (It'll print the skeleton stderr line and exit; that's fine.)
 - Commit as `feat(scripts): add .app bundle build for Bluetooth permission`.
 
 **Step 3 — BLE scan subcommand.**
@@ -718,7 +720,7 @@ Ordered steps, each its own commit:
   - `Scan(ctx, timeout)` using `tinygo.org/x/bluetooth`. Filter by service UUID `0xFE00` AND name containing "walkingpad" (case-insensitive). Return discovered peripherals + RSSI.
 - Add `scan` subcommand in `cmd/king-smith-walkingpad-mac/main.go` that prints the table.
 - `go get tinygo.org/x/bluetooth@v0.10.0` (verify current version in the inspiration tim-oster repo's `go.mod` before pinning).
-- **First hardware test:** `make build-app && /Applications/King-Smith-WalkingPad-Mac.app/Contents/MacOS/king-smith-walkingpad-mac scan`. The macOS Bluetooth permission prompt should appear. Accept it. The P1 should appear.
+- **First hardware test:** `make build-app && /Applications/WalkingPad.app/Contents/MacOS/walkingpad scan`. The macOS Bluetooth permission prompt should appear. Accept it. The P1 should appear.
   - If no devices appear and no prompt: check System Settings → Privacy & Security → Bluetooth. Confirm the `.app` is listed. If not listed: re-build, re-run.
   - If still nothing: this is a major risk per PRD §16 Q1 — **stop and escalate to the user**. Do not try increasingly elaborate workarounds.
 - Commit as `feat(ble): add device scan command`.

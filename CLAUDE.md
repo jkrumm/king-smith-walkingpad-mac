@@ -1,5 +1,11 @@
 # CLAUDE.md — king-smith-walkingpad-mac
 
+> **Naming.** The repo and Go module keep `king-smith-walkingpad-mac` for SEO.
+> Everything user-facing is `WalkingPad` (display) / `walkingpad` (CLI binary,
+> identifier, log paths). The `cmd/king-smith-walkingpad-mac/` directory matches
+> the repo; its compiled output is `bin/walkingpad`, installed to
+> `/Applications/WalkingPad.app/Contents/MacOS/walkingpad`.
+
 Per-project guidance for Claude Code. The global config at `~/.claude/CLAUDE.md` applies; this file adds project-specific rules.
 
 ## What this project is
@@ -22,7 +28,7 @@ A macOS LaunchAgent (Go) + Raycast extension that controls and tracks the KingSm
 
 ## Critical gotchas (read every time you touch these areas)
 
-1. **macOS Bluetooth requires a `.app` bundle.** A bare binary anywhere on `$PATH` (`/opt/homebrew/bin`, `/usr/local/bin`, etc.) is *silently denied* by CoreBluetooth — `Scan()` just returns nothing. The daemon must run from inside `King-Smith-WalkingPad-Mac.app` with `Info.plist` declaring `NSBluetoothAlwaysUsageDescription` + `NSBluetoothPeripheralUsageDescription`. We do NOT install a bare binary anywhere — the `.app` at `/Applications/` is the only install target. See PRD §12.
+1. **macOS Bluetooth requires a `.app` bundle.** A bare binary anywhere on `$PATH` (`/opt/homebrew/bin`, `/usr/local/bin`, etc.) is *silently denied* by CoreBluetooth — `Scan()` just returns nothing. The daemon must run from inside `WalkingPad.app` with `Info.plist` declaring `NSBluetoothAlwaysUsageDescription` + `NSBluetoothPeripheralUsageDescription`. We do NOT install a bare binary anywhere — the `.app` at `/Applications/` is the only install target. See PRD §12.
 2. **BLE write rate limit.** Device drops frames if commands arrive faster than ~1.4 Hz. **Enforce a 700 ms minimum gap** between any writes (the `frames.go` writer owns this). Status polls and user commands share the same write channel.
 3. **CRC scope.** `sum(buf[1:-2]) & 0xFF` — exclusive of start byte AND checksum slot AND terminator. Get this wrong and the device silently ignores commands. Always test against the fixtures in `ble/frames_test.go`.
 4. **Single BLE owner.** macOS allows only one GATT connection per peripheral. The daemon is the sole BLE client. Raycast / CLI / argo all go through the HTTP API. Never add a second BLE client.
@@ -48,7 +54,7 @@ git clone https://github.com/mcdax/walkingpad-controller.git /tmp/walkingpad-res
 ## Layout
 
 ```
-cmd/king-smith-walkingpad-mac/main.go    # CLI: serve, scan, connect, start subcommands
+cmd/king-smith-walkingpad-mac/main.go    # CLI entrypoint; compiled to `walkingpad`
 internal/ble/                            # BLE client, frame codec, reconnect
 internal/session/                        # Session state machine, calorie calc
 internal/store/                          # SQLite + migrations
@@ -65,7 +71,7 @@ Full diagram and per-file responsibilities in PRD §5.
 ## Devloop
 
 ```bash
-make build               # → ./bin/king-smith-walkingpad-mac
+make build               # → ./bin/walkingpad
 make test                # go test -race
 make test-cover          # coverage report
 make fmt                 # gofmt + go mod tidy
@@ -74,7 +80,7 @@ make run                 # build + run in foreground
 make scan                # dev tool: list nearby WalkingPad devices
 make install-agent       # install LaunchAgent plist (after build-app-bundle)
 make reload              # kickstart the agent
-make logs                # tail /tmp/king-smith-walkingpad-mac.log
+make logs                # tail /tmp/walkingpad.log
 make raycast-dev         # cd raycast && ray develop
 ```
 
@@ -112,4 +118,4 @@ Per global rules: argo changes happen as a **separate PR** in the argo repo, nev
 
 ## Milestone reminder
 
-We're in **Milestone 0 — POC**. Exit criterion: `make build && ./bin/king-smith-walkingpad-mac connect` streams live status frames from the P1 for ≥60 s with no drops. Until that works on the actual hardware, nothing else matters. Resist scope creep into Milestone 1 features.
+We're in **Milestone 0 — POC**. Exit criterion: `make build && ./bin/walkingpad connect` streams live status frames from the P1 for ≥60 s with no drops. Until that works on the actual hardware, nothing else matters. Resist scope creep into Milestone 1 features.
