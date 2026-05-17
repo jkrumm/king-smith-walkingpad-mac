@@ -25,6 +25,8 @@ import (
 
 	"github.com/jkrumm/king-smith-walkingpad-mac/internal/ble"
 	"github.com/jkrumm/king-smith-walkingpad-mac/internal/config"
+	"github.com/jkrumm/king-smith-walkingpad-mac/internal/logger"
+	"github.com/jkrumm/king-smith-walkingpad-mac/internal/serve"
 )
 
 // Version is injected at build time via -ldflags.
@@ -51,6 +53,8 @@ func dispatch(ctx context.Context, cmd string, args []string) int {
 		return runConnect(ctx, args)
 	case "config":
 		return runConfig(ctx, args)
+	case "serve":
+		return runServe(ctx, args)
 	case "version", "--version", "-v":
 		fmt.Println(Version)
 		return 0
@@ -74,6 +78,7 @@ Commands:
   scan       Discover nearby WalkingPad devices
   connect    Connect, subscribe to status frames, poll ask_stats
   config     Show the resolved configuration (defaults + TOML + env)
+  serve      Run the daemon: BLE link + session store + HTTP API
   version    Print the build version
   help       Show this help
 
@@ -319,6 +324,34 @@ func redact(s string) string {
 		return ""
 	}
 	return "***redacted***"
+}
+
+func runServe(ctx context.Context, args []string) int {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	defaultPath, _ := config.DefaultConfigPath()
+	configPath := fs.String("config", defaultPath, "TOML config path (missing file uses defaults)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		return 1
+	}
+
+	log, closer, err := logger.New(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "init logger: %v\n", err)
+		return 1
+	}
+	defer func() { _ = closer.Close() }()
+
+	if err := serve.Run(ctx, cfg, log, Version); err != nil {
+		log.Error("serve.exit", "err", err)
+		return 1
+	}
+	return 0
 }
 
 func pickWalkingPad(ctx context.Context, timeout time.Duration) (ble.Discovered, error) {
