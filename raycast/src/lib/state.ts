@@ -23,10 +23,10 @@ export function stateDisplay(connected: boolean, belt?: string): StateDisplay {
   switch (belt) {
     case "ACTIVE":
       return {
-        label: "Walking",
+        label: "Active",
         icon: Icon.CircleFilled,
         color: Color.Green,
-        tag: "walking",
+        tag: "active",
       };
     case "STARTING":
       return {

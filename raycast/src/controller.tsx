@@ -52,17 +52,22 @@ export default function Controller() {
     [revalidate],
   );
 
+  const running = isRunning(data?.belt_state);
+
   const onStart = (speed?: number) =>
     runAction(`Start${speed ? ` at ${speed.toFixed(1)} km/h` : ""}`, () =>
       api.start(speed),
     );
   const onStop = () => runAction("Stop", () => api.stop());
   const onSetSpeed = (v: number) =>
-    runAction(`Speed → ${v.toFixed(1)} km/h`, () => api.setSpeed(v));
+    runAction(`Set Speed → ${v.toFixed(1)} km/h`, () => api.setSpeed(v));
   const onBumpSpeed = (delta: number) => {
     const next = clampSpeed((data?.speed_kmh ?? 1.0) + delta);
     return onSetSpeed(next);
   };
+  // Preset speeds: when the belt is running this is a live speed change;
+  // when stopped it's an explicit "start at X" — never both.
+  const onPresetSpeed = (v: number) => (running ? onSetSpeed(v) : onStart(v));
   const onSync = () =>
     runAction("Sync to Argo", async () => {
       const r = await api.sync();
@@ -72,8 +77,6 @@ export default function Controller() {
   const markdown = useMemo(() => renderMarkdown(data, error), [data, error]);
   const metadata = useMemo(() => renderMetadata(data), [data]);
 
-  const running = isRunning(data?.belt_state);
-
   return (
     <Detail
       isLoading={isLoading}
@@ -82,14 +85,28 @@ export default function Controller() {
       navigationTitle="WalkingPad"
       actions={
         <ActionPanel>
-          <ActionPanel.Section title="Belt">
+          <ActionPanel.Section title={running ? "Active" : "Stopped"}>
             {running ? (
-              <Action
-                title="Stop"
-                icon={Icon.Stop}
-                shortcut={{ modifiers: ["cmd"], key: "." }}
-                onAction={onStop}
-              />
+              <>
+                <Action
+                  title="Stop"
+                  icon={Icon.Stop}
+                  shortcut={{ modifiers: ["cmd"], key: "." }}
+                  onAction={onStop}
+                />
+                <Action
+                  title={`Speed +${step.toFixed(1)} km/h`}
+                  icon={Icon.ArrowUp}
+                  shortcut={{ modifiers: ["cmd"], key: "=" }}
+                  onAction={() => onBumpSpeed(step)}
+                />
+                <Action
+                  title={`Speed −${step.toFixed(1)} km/h`}
+                  icon={Icon.ArrowDown}
+                  shortcut={{ modifiers: ["cmd"], key: "-" }}
+                  onAction={() => onBumpSpeed(-step)}
+                />
+              </>
             ) : (
               <Action
                 title="Start"
@@ -98,30 +115,20 @@ export default function Controller() {
                 onAction={() => onStart()}
               />
             )}
-            <Action
-              title={`Speed +${step.toFixed(1)} km/h`}
-              icon={Icon.ArrowUp}
-              shortcut={{ modifiers: ["cmd"], key: "=" }}
-              onAction={() => onBumpSpeed(step)}
-            />
-            <Action
-              title={`Speed −${step.toFixed(1)} km/h`}
-              icon={Icon.ArrowDown}
-              shortcut={{ modifiers: ["cmd"], key: "-" }}
-              onAction={() => onBumpSpeed(-step)}
-            />
             <SetSpeedAction onSubmit={onSetSpeed} />
             <SetStartSpeedAction />
           </ActionPanel.Section>
 
-          <ActionPanel.Section title="Quick Set (km/h)">
+          <ActionPanel.Section
+            title={running ? "Set Speed (km/h)" : "Start At (km/h)"}
+          >
             {SPEED_GRID.map((v, i) => (
               <Action
                 key={v}
                 title={v.toFixed(1)}
-                icon={Icon.Gauge}
+                icon={running ? Icon.Gauge : Icon.Play}
                 shortcut={quickShortcut(i)}
-                onAction={() => onSetSpeed(v)}
+                onAction={() => onPresetSpeed(v)}
               />
             ))}
           </ActionPanel.Section>

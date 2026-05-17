@@ -65,7 +65,7 @@ export default function SetSpeed() {
 
 function SpeedActions({ value, running }: { value: number; running: boolean }) {
   const primaryTitle = running
-    ? `Set to ${value.toFixed(1)} km/h`
+    ? `Set Speed → ${value.toFixed(1)} km/h`
     : `Start at ${value.toFixed(1)} km/h`;
   return (
     <ActionPanel>

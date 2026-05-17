@@ -127,7 +127,13 @@ export default function MenuBar() {
       )}
 
       <MenuBarExtra.Section
-        title={running ? "Set Speed (km/h)" : "Start At (km/h)"}
+        title={
+          running
+            ? "Set Speed (km/h)"
+            : stopped
+              ? "Start At (km/h)"
+              : "Speed (km/h)"
+        }
       >
         {SPEED_GRID.map((v) => (
           <MenuBarExtra.Item
