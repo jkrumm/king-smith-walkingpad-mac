@@ -761,3 +761,134 @@ func TestManager_RawFramesOptional(t *testing.T) {
 		t.Errorf("IncludeRawFrames=true should populate hex; non-null=%d", nonNullCount)
 	}
 }
+
+// --- max_speed_kmh: derived from inter-frame distance --------------------
+
+// TestManager_MaxSpeedTracksInterFrameMotion proves that an inter-frame speed
+// bump (covered by the device's own distance integrator but never reflected in
+// a per-frame SpeedKmh reading at the slow 3-5 s BLE cadence) raises
+// max_speed_kmh. Without this, max_speed_kmh could read lower than the
+// computed avg_speed_kmh — physically impossible (regression guard for the
+// "avg 4.6, peak 4.0" artifact surfaced in argo).
+func TestManager_MaxSpeedTracksInterFrameMotion(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	m := newTestManager(t, st)
+
+	base := time.Date(2026, 5, 17, 13, 0, 0, 0, time.UTC)
+
+	// Three frames 5 s apart, all reporting setpoint 4.0 km/h. Between the
+	// 2nd and 3rd frames the user briefly bumped to ~5.4 km/h — the device's
+	// distance counter advances accordingly (~7.5 m in 5 s ≈ 5.4 km/h) but
+	// the next frame's SpeedKmh setpoint reading is back at 4.0.
+	//   t=0 s: speed 4.0, distance 0
+	//   t=5 s: speed 4.0, distance 5.5  (≈ 4.0 km/h × 5 s)
+	//   t=10 s: speed 4.0, distance 13.0 (≈ 5.4 km/h × 5 s on this leg)
+	if err := m.Ingest(ctx, running(4.0, 0, 0), base); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Ingest(ctx, running(4.0, 5.5, 7), base.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Ingest(ctx, running(4.0, 13.0, 16), base.Add(10*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Ingest(ctx, stopped(), base.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, _ := st.ListSessions(ctx, 10, time.Time{})
+	if len(sessions) != 1 {
+		t.Fatalf("want 1 session, got %d", len(sessions))
+	}
+	got := sessions[0]
+	// Derived speed across t=5→10 s: (7.5 m / 5 s) * 3.6 ≈ 5.4 km/h. Must
+	// exceed the per-frame setpoint reading (4.0 km/h) and end up in max.
+	if got.MaxSpeedKmh < 5.0 {
+		t.Errorf("max_speed = %g, want ≥ 5.0 (derived from inter-frame distance)", got.MaxSpeedKmh)
+	}
+	// avg_speed must never exceed max_speed.
+	if got.AvgSpeedKmh > got.MaxSpeedKmh {
+		t.Errorf("physically impossible: avg %g > max %g", got.AvgSpeedKmh, got.MaxSpeedKmh)
+	}
+}
+
+// TestManager_MaxSpeedIgnoresGlitchSpikes proves the derived-speed pass
+// rejects implausible single-frame spikes (counter glitches that would
+// otherwise peg max_speed at hundreds of km/h). A glitch frame must not
+// poison the peak when later normal data keeps the session-level avg
+// physically plausible.
+func TestManager_MaxSpeedIgnoresGlitchSpikes(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	m := newTestManager(t, st)
+
+	base := time.Date(2026, 5, 17, 13, 0, 0, 0, time.UTC)
+
+	// Frame 0: opens the session at 0 m.
+	// Frame 1 (t=1s): distance jumps to 20 m — 20 m/s ≈ 72 km/h, clearly a
+	// counter glitch on a 6 km/h-capped belt. Must be ignored by the
+	// derived-speed pass.
+	// Frame 2 (t=60s): normal motion — 60 m more (≈3.66 km/h derived).
+	// Total: 80 m of distance, ~60 s of active window. avg ≈ 4.8 km/h.
+	if err := m.Ingest(ctx, running(4.0, 0, 0), base); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Ingest(ctx, running(4.0, 20, 30), base.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Ingest(ctx, running(4.0, 80, 130), base.Add(60*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Ingest(ctx, stopped(), base.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, _ := st.ListSessions(ctx, 10, time.Time{})
+	got := sessions[0]
+	if got.MaxSpeedKmh > ble.MaxSpeedKmh {
+		t.Errorf("max_speed = %g, must not exceed hardware ceiling %g (glitch frame poisoned peak)",
+			got.MaxSpeedKmh, ble.MaxSpeedKmh)
+	}
+	if got.AvgSpeedKmh > got.MaxSpeedKmh {
+		t.Errorf("physically impossible: avg %g > max %g", got.AvgSpeedKmh, got.MaxSpeedKmh)
+	}
+}
+
+// TestManager_CloseClampsMaxToAvgWhenInverted is a belt-and-suspenders guard:
+// even if the derived-speed pass missed (e.g. across a multi-tick outage
+// rebuilt from persisted samples), the close path raises max to avg so the
+// stored row is never physically impossible.
+func TestManager_CloseClampsMaxToAvgWhenInverted(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	m := newTestManager(t, st)
+
+	base := time.Date(2026, 5, 17, 13, 0, 0, 0, time.UTC)
+	// Open a session.
+	if err := m.Ingest(ctx, running(4.0, 0, 0), base); err != nil {
+		t.Fatal(err)
+	}
+	// Force the in-memory state into the impossible shape directly to simulate
+	// a path the derived-speed pass cannot catch. distanceM/activeS will give
+	// avg ≈ 5.4 km/h while max stays at 4.0.
+	m.mu.Lock()
+	m.cur.maxSpeedKmh = 4.0
+	m.cur.totalDistanceM = 90.0
+	m.cur.activeWindowStart = base
+	m.cur.closedActiveS = 0
+	m.mu.Unlock()
+	// Close at +60 s.
+	if err := m.Ingest(ctx, stopped(), base.Add(60*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, _ := st.ListSessions(ctx, 10, time.Time{})
+	got := sessions[0]
+	if got.AvgSpeedKmh > got.MaxSpeedKmh {
+		t.Errorf("close-time clamp failed: avg %g > max %g", got.AvgSpeedKmh, got.MaxSpeedKmh)
+	}
+	if got.MaxSpeedKmh < got.AvgSpeedKmh {
+		t.Errorf("max %g must be raised to at least avg %g", got.MaxSpeedKmh, got.AvgSpeedKmh)
+	}
+}

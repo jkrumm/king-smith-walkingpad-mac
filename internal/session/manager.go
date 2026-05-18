@@ -463,6 +463,19 @@ func (m *Manager) closeLocked(ctx context.Context, endedAt time.Time) error {
 	}
 	if active > 0 {
 		totals.AvgSpeedKmh = (m.cur.totalDistanceM / 1000.0) / (active / 3600.0)
+		// Belt-and-suspenders for any case the derived-speed pass in
+		// applyRunningTick missed (e.g. a session restored from samples that
+		// pre-date this fix, or a multi-tick BLE outage where individual
+		// derivations were skipped). avg > max is physically impossible —
+		// raise max to avg and log so the upstream daemon issue stays visible.
+		if totals.AvgSpeedKmh > totals.MaxSpeedKmh {
+			m.log.Warn("session.max_speed.clamped_to_avg",
+				"uuid", m.cur.uuid,
+				"raw_max_kmh", totals.MaxSpeedKmh,
+				"avg_kmh", totals.AvgSpeedKmh,
+			)
+			totals.MaxSpeedKmh = totals.AvgSpeedKmh
+		}
 	}
 	if err := m.store.CloseSession(ctx, m.cur.sessionID, endedAt, totals); err != nil {
 		return fmt.Errorf("close session: %w", err)
@@ -486,12 +499,17 @@ func (m *Manager) closeLocked(ctx context.Context, endedAt time.Time) error {
 func (m *Manager) applyRunningTick(speedKmh, devDistance float64, devSteps uint32, ts time.Time) {
 	// Distance delta. Device may have reset its counter between two running
 	// samples (e.g. across a STANDBY pause) — clamp the delta to zero in that
-	// case by treating the current reading as a fresh baseline.
-	if devDistance >= m.cur.lastDevDistance {
-		m.cur.totalDistanceM += devDistance - m.cur.lastDevDistance
+	// case by treating the current reading as a fresh baseline. We capture
+	// the delta as a local so the max-speed pass below can derive an implicit
+	// speed from it.
+	counterReset := devDistance < m.cur.lastDevDistance
+	var distanceDelta float64
+	if counterReset {
+		distanceDelta = devDistance
 	} else {
-		m.cur.totalDistanceM += devDistance
+		distanceDelta = devDistance - m.cur.lastDevDistance
 	}
+	m.cur.totalDistanceM += distanceDelta
 	m.cur.lastDevDistance = devDistance
 
 	// Steps delta — same shape.
@@ -504,8 +522,27 @@ func (m *Manager) applyRunningTick(speedKmh, devDistance float64, devSteps uint3
 	}
 	m.cur.lastDevSteps = devSteps
 
-	if speedKmh > m.cur.maxSpeedKmh {
-		m.cur.maxSpeedKmh = speedKmh
+	// Max speed: combine the per-frame setpoint reading with the implicit
+	// speed derived from this tick's distance delta and wall-time gap. BLE
+	// frames arrive at 3-5 s intervals, so a brief in-frame speed bump is
+	// invisible to the setpoint stream but captured by the device's own
+	// distance integrator. Without the derived component, max_speed_kmh can
+	// read lower than avg_speed_kmh (which is computed at close time from
+	// total_distance / active_time) — a physically impossible artifact.
+	// Cap at the device's hardware ceiling so counter glitches or replays
+	// of synthetic data can't poison the peak.
+	peak := speedKmh
+	if !m.cur.lastRunningTs.IsZero() && !counterReset && distanceDelta > 0 {
+		dt := ts.Sub(m.cur.lastRunningTs).Seconds()
+		if dt > 0 && dt <= runningGapMaxSeconds {
+			derivedKmh := (distanceDelta / dt) * 3.6
+			if derivedKmh > peak && derivedKmh <= ble.MaxSpeedKmh {
+				peak = derivedKmh
+			}
+		}
+	}
+	if peak > m.cur.maxSpeedKmh {
+		m.cur.maxSpeedKmh = peak
 	}
 
 	// Open the active window on the first running tick of this burst.
