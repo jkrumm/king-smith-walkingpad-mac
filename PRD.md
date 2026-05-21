@@ -343,9 +343,9 @@ Listens on `127.0.0.1:7706` (configurable). Loopback-only; no TLS. Bearer-token 
 |-|-|-|-|
 | `GET /health` | — | `{"ok":true,"version":"…"}` | Unauthenticated. |
 | `GET /status` | — | live status object (see below) | Last frame from BLE + current session summary. |
-| `POST /start` | `{"speed_kmh":3.5}` (optional) | `{"ok":true}` | Switches to manual mode, sets speed, sends start. Idempotent: when the belt is already active or ramping, /start short-circuits to /speed (or a no-op if no speed given) — the raw start frame halts a running P1. |
+| `POST /start` | `{"speed_kmh":3.5}` (optional) | `{"ok":true}` | Switches to manual mode, starts the belt, **waits out the 3-2-1 ramp, then applies the speed** — the P1 drops set-speed sent while STOPPED/ramping and would settle at its stored START_SPEED pref otherwise, so the request blocks ~4-5 s. Idempotent: when the belt is already active or ramping, /start never re-sends the raw start frame (that halts a running P1) — it just waits for ACTIVE and sets speed (or no-ops if no speed given). |
 | `POST /stop` | — | `{"ok":true}` | `set_speed(0)`. |
-| `POST /speed` | `{"speed_kmh":4.0}` | `{"ok":true}` | 0.5–6.0 inclusive; rounded to 0.1. |
+| `POST /speed` | `{"speed_kmh":4.0}` | `{"ok":true}` | 0.5–6.0 inclusive; rounded to 0.1. Same start-then-bump rule as /start: from a STOPPED belt it starts the belt, waits for ACTIVE, then applies the speed rather than silently dropping the frame. |
 | `POST /pref/start-speed` | `{"speed_kmh":2.0}` | `{"ok":true}` | Writes PREFS_START_SPEED. |
 | `GET /sessions` | — | `{"sessions":[…]}` | Paginated: `?limit=` `?before=`. |
 | `GET /sessions/:uuid` | — | full session + samples | |

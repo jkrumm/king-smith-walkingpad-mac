@@ -157,7 +157,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger, version strin
 		},
 	})
 
-	ctrl := newController(link)
+	ctrl := newController(link, statusProv)
 
 	// --- Argo sync worker (optional) -------------------------------------
 	// Only constructed when both URL and token are configured. Without it,
