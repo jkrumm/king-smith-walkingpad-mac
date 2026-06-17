@@ -1,4 +1,4 @@
-import { palette } from "./theme";
+import { palette, type Palette } from "./theme";
 
 // SVG charts rendered straight into Raycast's markdown via data-URI <img>.
 // Everything here is theme-aware and self-contained — no external assets.
@@ -187,48 +187,132 @@ export function lineChart(opts: LineChartOpts): string {
   return svg(w, h, title + yTicks + area + line + marker + tail, p.panel);
 }
 
-// --- Progress ring ---------------------------------------------------------
+// --- Activity rings card ---------------------------------------------------
 
-export interface ProgressRingOpts {
-  value: number;
-  goal: number;
-  // Big label inside (e.g. "1.4 km" or "1,234").
-  primary: string;
-  secondary?: string;
-  // Override the fill color (defaults to the steps accent).
-  color?: string;
+// A single SVG that pairs Apple-Watch-style concentric goal rings with a dense
+// readout column. Combining everything into ONE image is deliberate: Raycast's
+// markdown renderer lays each `![]()` out as its own block, so two separate
+// ring images stack vertically. One self-contained card gives us full layout
+// control (rings + stats side by side) regardless of how the renderer flows
+// blocks, and reads as a proper dashboard widget rather than loose circles.
+
+// Maps a metric to its stable palette accent so callers stay theme-agnostic —
+// they pass a semantic tone, charts.ts owns the colour resolution.
+export type MetricTone = "steps" | "distance" | "time" | "energy" | "speed";
+
+function toneColor(p: Palette, tone: MetricTone): string {
+  switch (tone) {
+    case "steps":
+      return p.steps;
+    case "distance":
+      return p.distance;
+    case "time":
+      return p.active;
+    case "energy":
+      return p.kcal;
+    case "speed":
+      return p.speed;
+  }
 }
 
-export function progressRing(opts: ProgressRingOpts): string {
-  const p = palette();
-  const w = 200;
-  const h = 200;
-  const cx = w / 2;
-  const cy = h / 2;
-  const r = 78;
-  const stroke = 14;
-  const circumference = 2 * Math.PI * r;
-  const ratio = Math.max(
-    0,
-    Math.min(1, opts.value / Math.max(0.0001, opts.goal)),
-  );
-  const dash = circumference * ratio;
-  const color = opts.color ?? p.steps;
+export interface ActivityRing {
+  label: string;
+  value: number;
+  goal: number;
+  tone: MetricTone;
+  // Pre-formatted for the readout column (e.g. "5,432" and "8,000").
+  valueText: string;
+  goalText: string;
+}
 
-  return svg(
-    w,
-    h,
-    `
-      <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${p.grid}" stroke-width="${stroke}"/>
-      <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${stroke}"
-              stroke-linecap="round"
-              stroke-dasharray="${dash.toFixed(2)} ${(circumference - dash).toFixed(2)}"
-              transform="rotate(-90 ${cx} ${cy})"/>
-      <text x="${cx}" y="${cy + 2}" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="26" font-weight="700" fill="${p.fg}">${escapeXml(opts.primary)}</text>
-      ${opts.secondary ? `<text x="${cx}" y="${cy + 24}" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="12" fill="${p.muted}">${escapeXml(opts.secondary)}</text>` : ""}
-    `,
-    p.panel,
-  );
+export interface ActivityStat {
+  label: string;
+  valueText: string;
+  tone: MetricTone;
+}
+
+export interface ActivityCardOpts {
+  title?: string;
+  // Outer → inner, max 3 rendered as rings.
+  rings: ActivityRing[];
+  // Extra readouts shown under the ringed rows (no goal arc).
+  stats?: ActivityStat[];
+}
+
+const FONT = "-apple-system, system-ui, sans-serif";
+
+export function activityCard(opts: ActivityCardOpts): string {
+  const p = palette();
+  const w = 560;
+  const h = 236;
+  const cx = 126;
+  const cy = 134;
+  const strokeW = 18;
+  const gap = 7;
+  const baseR = 84;
+
+  const title = opts.title
+    ? `<text x="20" y="26" font-family="${FONT}" font-size="13" font-weight="600" fill="${p.muted}" letter-spacing="1">${escapeXml(opts.title.toUpperCase())}</text>`
+    : "";
+
+  const rings = opts.rings
+    .slice(0, 3)
+    .map((ring, i) => {
+      const r = baseR - i * (strokeW + gap);
+      const circ = 2 * Math.PI * r;
+      const ratio = Math.max(
+        0,
+        Math.min(1, ring.value / Math.max(0.0001, ring.goal)),
+      );
+      const dash = circ * ratio;
+      const color = toneColor(p, ring.tone);
+      // Track is the ring colour at low opacity (Apple-style) so an empty ring
+      // still reads as "this metric exists, just not started".
+      const track = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-opacity="0.18" stroke-width="${strokeW}"/>`;
+      const arc =
+        ratio > 0
+          ? `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${strokeW}" stroke-linecap="round" stroke-dasharray="${dash.toFixed(2)} ${(circ - dash).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"/>`
+          : "";
+      return track + arc;
+    })
+    .join("");
+
+  const rows = [
+    ...opts.rings.slice(0, 3).map((r) => ({
+      label: r.label,
+      value: r.valueText,
+      sub: `/ ${r.goalText}`,
+      tone: r.tone,
+    })),
+    ...(opts.stats ?? []).map((s) => ({
+      label: s.label,
+      value: s.valueText,
+      sub: "",
+      tone: s.tone,
+    })),
+  ];
+
+  const colX = 250;
+  const dotX = colX + 6;
+  const textX = colX + 22;
+  const top = 58;
+  const rowH = (h - top - 16) / Math.max(1, rows.length);
+
+  const rowsSvg = rows
+    .map((row, i) => {
+      const rowCy = top + rowH * i + rowH / 2;
+      const color = toneColor(p, row.tone);
+      const dot = `<circle cx="${dotX}" cy="${(rowCy - 12).toFixed(1)}" r="4.5" fill="${color}"/>`;
+      const label = `<text x="${textX}" y="${(rowCy - 8).toFixed(1)}" font-family="${FONT}" font-size="12" font-weight="600" fill="${p.muted}" letter-spacing="0.5">${escapeXml(row.label.toUpperCase())}</text>`;
+      const sub = row.sub
+        ? `<tspan font-size="13" font-weight="500" fill="${p.muted}"> ${escapeXml(row.sub)}</tspan>`
+        : "";
+      const value = `<text x="${textX}" y="${(rowCy + 16).toFixed(1)}" font-family="${FONT}" font-size="22" font-weight="700" fill="${p.fg}">${escapeXml(row.value)}${sub}</text>`;
+      return dot + label + value;
+    })
+    .join("");
+
+  return svg(w, h, title + rings + rowsSvg, p.panel);
 }
 
 // --- Util ------------------------------------------------------------------

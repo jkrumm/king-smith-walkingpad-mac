@@ -19,7 +19,7 @@ import {
   SPEED_GRID,
   speedStep,
 } from "./lib/api";
-import { asImage, barChart, lineChart, progressRing } from "./lib/charts";
+import { activityCard, asImage, barChart, lineChart } from "./lib/charts";
 import {
   formatDistance,
   formatDuration,
@@ -36,6 +36,7 @@ import type { CurrentSession, Sample, Session, Status } from "./lib/types";
 const REFRESH_MS = 1000;
 const STEP_GOAL = 8000;
 const DISTANCE_GOAL_KM = 5;
+const TIME_GOAL_MIN = 30;
 
 export default function Controller() {
   const status = useStatus(REFRESH_MS);
@@ -237,7 +238,7 @@ function buildMarkdownKey(
     .slice(0, 5)
     .map((s) => s.uuid)
     .join(",");
-  return `${data.connected}|${data.belt_state ?? "?"}|${(data.speed_kmh ?? 0).toFixed(1)}|${Math.round(data.today.distance_m)}|${data.today.steps}|${csKey}|${bk}|${rk}`;
+  return `${data.connected}|${data.belt_state ?? "?"}|${(data.speed_kmh ?? 0).toFixed(1)}|${Math.round(data.today.distance_m)}|${data.today.steps}|${Math.round(data.today.kcal)}|${data.today.duration_s}|${csKey}|${bk}|${rk}`;
 }
 
 function renderMarkdown(
@@ -345,30 +346,44 @@ function appendHistoricals(
   lines.push("");
   lines.push(
     asImage(
-      progressRing({
-        value: today.steps,
-        goal: STEP_GOAL,
-        primary: formatStepsShort(today.steps),
-        secondary: `of ${formatStepsShort(STEP_GOAL)} steps`,
+      activityCard({
+        title: "Today",
+        rings: [
+          {
+            label: "Steps",
+            value: today.steps,
+            goal: STEP_GOAL,
+            tone: "steps",
+            valueText: formatStepsShort(today.steps),
+            goalText: formatStepsShort(STEP_GOAL),
+          },
+          {
+            label: "Distance",
+            value: todayKm,
+            goal: DISTANCE_GOAL_KM,
+            tone: "distance",
+            valueText: `${todayKm.toFixed(2)} km`,
+            goalText: `${DISTANCE_GOAL_KM} km`,
+          },
+          {
+            label: "Time",
+            value: today.duration_s / 60,
+            goal: TIME_GOAL_MIN,
+            tone: "time",
+            valueText: formatDurationLong(today.duration_s),
+            goalText: `${TIME_GOAL_MIN} min`,
+          },
+        ],
+        stats: [
+          {
+            label: "Energy",
+            valueText: formatKcal(today.kcal),
+            tone: "energy",
+          },
+        ],
       }),
-      "steps-progress",
+      "today",
     ),
-  );
-  lines.push(
-    asImage(
-      progressRing({
-        value: todayKm,
-        goal: DISTANCE_GOAL_KM,
-        primary: todayKm.toFixed(2),
-        secondary: `of ${DISTANCE_GOAL_KM} km`,
-        color: "#0a84ff",
-      }),
-      "km-progress",
-    ),
-  );
-  lines.push("");
-  lines.push(
-    `**${formatKcal(today.kcal)}** · ${formatDurationLong(today.duration_s)}`,
   );
   lines.push("");
 

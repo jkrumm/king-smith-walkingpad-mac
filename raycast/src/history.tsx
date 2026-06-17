@@ -1,6 +1,7 @@
 import {
   Action,
   ActionPanel,
+  Color,
   Icon,
   List,
   launchCommand,
@@ -24,7 +25,7 @@ import {
   useSessions,
   useSummary,
 } from "./lib/hooks";
-import type { Period, Sample, Session } from "./lib/types";
+import type { Period, Sample, Session, Summary } from "./lib/types";
 
 const BUCKETS = [
   "Today",
@@ -83,6 +84,7 @@ export default function History() {
         <SummaryItem
           period={period}
           totals={totalsLine}
+          summary={summary.data}
           buckets={daily.buckets}
           isSelected={selected === "__summary__"}
         />
@@ -132,10 +134,12 @@ export default function History() {
 function SummaryItem({
   period,
   totals,
+  summary,
   buckets,
 }: {
   period: Period;
   totals: string;
+  summary: Summary | undefined;
   buckets: ReturnType<typeof useDailyBreakdown>["buckets"];
   isSelected: boolean;
 }) {
@@ -192,7 +196,12 @@ function SummaryItem({
       title="Period summary"
       subtitle={totals}
       icon={Icon.BarChart}
-      detail={<List.Item.Detail markdown={md} />}
+      detail={
+        <List.Item.Detail
+          markdown={md}
+          metadata={summary ? <SummaryMetadata summary={summary} /> : undefined}
+        />
+      }
       actions={
         <ActionPanel>
           <Action
@@ -233,7 +242,8 @@ function HistoryItem({
       ]}
       detail={
         <List.Item.Detail
-          markdown={renderDetail(session, detail.data?.samples)}
+          markdown={renderSessionChart(session, detail.data?.samples)}
+          metadata={<SessionMetadata session={session} />}
         />
       }
       actions={
@@ -259,31 +269,18 @@ function HistoryItem({
   );
 }
 
-function renderDetail(session: Session, samples?: Sample[]): string {
+// Markdown side of the detail pane — just the heading + speed-profile chart.
+// All scalar stats moved into the structured metadata sidebar below.
+function renderSessionChart(session: Session, samples?: Sample[]): string {
   const lines: string[] = [];
+  lines.push(`# ${formatDate(session.started_at)}`);
   lines.push(
-    `# ${formatDate(session.started_at)} · ${formatTime(session.started_at)}`,
+    session.ended_at
+      ? `*${formatTime(session.started_at)} → ${formatTime(session.ended_at)}*`
+      : `*${formatTime(session.started_at)}*`,
   );
-  if (session.ended_at) {
-    lines.push(
-      `*${formatTime(session.started_at)} → ${formatTime(session.ended_at)}*`,
-    );
-  }
   lines.push("");
-  lines.push(
-    `**${formatDistance(session.distance_m)}** · **${formatStepsShort(session.steps)} steps** · ${formatDurationLong(session.duration_s)} · ${formatKcal(session.kcal)}`,
-  );
-  lines.push(
-    `avg ${formatSpeed(session.avg_speed_kmh)} · peak ${formatSpeed(session.max_speed_kmh)}`,
-  );
-  if (session.pause_count > 0) {
-    lines.push(
-      `${session.pause_count} pause${session.pause_count > 1 ? "s" : ""}`,
-    );
-  }
-
   if (samples && samples.length >= 2) {
-    lines.push("");
     lines.push(
       asImage(
         lineChart({
@@ -297,16 +294,88 @@ function renderDetail(session: Session, samples?: Sample[]): string {
         "speed-profile",
       ),
     );
-  }
-
-  if (session.synced_at) {
-    lines.push("");
-    lines.push(`> Synced to Argo at ${formatTime(session.synced_at)}`);
   } else {
-    lines.push("");
-    lines.push("> Not yet synced");
+    lines.push("> Speed profile unavailable for this session.");
   }
   return lines.join("\n");
+}
+
+function SessionMetadata({ session }: { session: Session }) {
+  const M = List.Item.Detail.Metadata;
+  const synced = Boolean(session.synced_at);
+  return (
+    <M>
+      <M.Label
+        title="Distance"
+        text={formatDistance(session.distance_m)}
+        icon={{ source: Icon.Map, tintColor: Color.Blue }}
+      />
+      <M.Label
+        title="Steps"
+        text={formatStepsShort(session.steps)}
+        icon={{ source: Icon.Footprints, tintColor: Color.Purple }}
+      />
+      <M.Label
+        title="Duration"
+        text={formatDurationLong(session.duration_s)}
+        icon={{ source: Icon.Clock, tintColor: Color.Green }}
+      />
+      <M.Label
+        title="Energy"
+        text={formatKcal(session.kcal)}
+        icon={{ source: Icon.Bolt, tintColor: Color.Orange }}
+      />
+      <M.Separator />
+      <M.Label title="Avg pace" text={formatSpeed(session.avg_speed_kmh)} />
+      <M.Label title="Peak pace" text={formatSpeed(session.max_speed_kmh)} />
+      {session.pause_count > 0 && (
+        <M.Label title="Pauses" text={String(session.pause_count)} />
+      )}
+      <M.Separator />
+      <M.TagList title="Argo sync">
+        <M.TagList.Item
+          text={
+            synced ? `Synced ${formatTime(session.synced_at!)}` : "Not synced"
+          }
+          color={synced ? Color.Green : Color.Orange}
+        />
+      </M.TagList>
+    </M>
+  );
+}
+
+function SummaryMetadata({ summary }: { summary: Summary }) {
+  const M = List.Item.Detail.Metadata;
+  return (
+    <M>
+      <M.Label
+        title="Distance"
+        text={formatDistance(summary.distance_m)}
+        icon={{ source: Icon.Map, tintColor: Color.Blue }}
+      />
+      <M.Label
+        title="Steps"
+        text={formatStepsShort(summary.steps)}
+        icon={{ source: Icon.Footprints, tintColor: Color.Purple }}
+      />
+      <M.Label
+        title="Duration"
+        text={formatDurationLong(summary.duration_s)}
+        icon={{ source: Icon.Clock, tintColor: Color.Green }}
+      />
+      <M.Label
+        title="Energy"
+        text={formatKcal(summary.kcal)}
+        icon={{ source: Icon.Bolt, tintColor: Color.Orange }}
+      />
+      <M.Separator />
+      <M.Label
+        title="Sessions"
+        text={String(summary.sessions)}
+        icon={{ source: Icon.Footprints, tintColor: Color.SecondaryText }}
+      />
+    </M>
+  );
 }
 
 function withinPeriod(s: Session, period: Period, now = new Date()): boolean {
