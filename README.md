@@ -2,10 +2,9 @@
 
 A macOS daemon and Raycast extension for the KingSmith **WalkingPad P1**. Control the belt, track every session, own your data.
 
-> **Status:** early development. Milestone 0 (BLE proof-of-concept) in progress. Hardware tested: WalkingPad P1 on macOS 26 (Apple Silicon).
-
-<!-- Screenshots will live here once the Raycast UI is working.
-     Suggested shots: menu bar with live session, history list, set-speed form. -->
+> **Status:** shipped, running under launchd on the Mac mini since July, with Argo sync
+> live and the Raycast extension in daily use. Hardware tested: WalkingPad P1 on macOS 26
+> (Apple Silicon).
 
 ## Why
 
@@ -132,7 +131,7 @@ curl http://127.0.0.1:7706/sessions?limit=10
 curl http://127.0.0.1:7706/summary?period=week
 ```
 
-Full API contract in [`PRD.md`](./PRD.md) §9.
+Full API contract (endpoints, response shapes) in [`docs/protocol.md`](docs/protocol.md) §8.
 
 ## Architecture
 
@@ -145,7 +144,8 @@ Raycast extension ─HTTP→ Go daemon ─BLE→ WalkingPad P1
                               └─→ Argo API (optional, async sync)
 ```
 
-See [`PRD.md`](./PRD.md) for the full architecture, BLE protocol spec, and design decisions.
+See [`docs/protocol.md`](docs/protocol.md) for the BLE protocol spec, SQLite schema and
+session-grouping logic.
 
 ## Troubleshooting
 
