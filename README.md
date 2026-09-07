@@ -30,6 +30,14 @@ Explicit non-goals: no Garmin upload (Garmin Connect can't update the watch's da
 - Raycast extension: menu bar + commands for start/stop/speed/history.
 - Optional sync to a personal API (Argo).
 
+## Where it runs
+
+**Mac mini only.** CoreBluetooth needs the pad within BLE range, and the mini is the
+always-on machine standing next to it — the daemon, its LaunchAgent and `make up` live
+there, and the mini's dev-host health check probes `GET /status`. The Raycast extension's
+**Daemon URL** preference defaults to the loopback `http://127.0.0.1:7706`, so it drives the
+pad from the mini; the API binds loopback only and is not reachable from another machine.
+
 ## Requirements
 
 | | |
