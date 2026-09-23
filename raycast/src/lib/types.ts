@@ -2,12 +2,7 @@
 // Keep field names snake_case to match the JSON exactly.
 
 export type BeltState =
-  | "STOPPED"
-  | "STARTING"
-  | "ACTIVE"
-  | "STOPPING"
-  | "STANDBY"
-  | "UNKNOWN";
+  "STOPPED" | "STARTING" | "ACTIVE" | "STOPPING" | "STANDBY" | "UNKNOWN";
 
 export type Period = "today" | "week" | "month" | "all";
 
