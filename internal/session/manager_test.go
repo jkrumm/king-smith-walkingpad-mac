@@ -717,7 +717,7 @@ func TestEnsureSession_NoResurrectOnEmptyStore(t *testing.T) {
 // --- misc -------------------------------------------------------------------
 
 func TestManager_StoppingFrameCounted(t *testing.T) {
-	// CLAUDE.md gotcha #8: 0x04 STOPPING is the last-chance frame; BeltState
+	// AGENTS.md gotcha #8: 0x04 STOPPING is the last-chance frame; BeltState
 	// considers it running so the session manager must capture it.
 	ctx := context.Background()
 	st := newTestStore(t)

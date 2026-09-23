@@ -171,7 +171,7 @@ make scan       # BLE device discovery (dev tool)
 make clean      # remove ./bin
 ```
 
-Read [`CLAUDE.md`](./CLAUDE.md) before extending. It captures the non-obvious gotchas (BLE rate limit, CRC scope, `.app` bundle requirement, etc.).
+Read [`AGENTS.md`](./AGENTS.md) before extending. It captures the non-obvious gotchas (BLE rate limit, CRC scope, `.app` bundle requirement, etc.).
 
 ## Credits
 

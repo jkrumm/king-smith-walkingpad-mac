@@ -1,7 +1,7 @@
 // Package config owns the daemon's runtime configuration.
 //
 // Resolution order: defaults → TOML file → environment variables. See PRD §11
-// for the schema and CLAUDE.md "Argo integration" for the token model (env or
+// for the schema and AGENTS.md "Argo integration" for the token model (env or
 // inline only — no shellout to `op` from the binary).
 package config
 

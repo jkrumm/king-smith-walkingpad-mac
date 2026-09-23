@@ -60,7 +60,7 @@ type LinkDialer interface {
 }
 
 // Link is the long-lived BLE connection manager. One Link per process — the
-// daemon is the sole BLE central on the Mac (CLAUDE.md gotcha #4).
+// daemon is the sole BLE central on the Mac (AGENTS.md gotcha #4).
 //
 // Run() blocks for the lifetime of the link, handling initial connect,
 // per-tick ask_stats polling, watchdog-based disconnect detection, and
