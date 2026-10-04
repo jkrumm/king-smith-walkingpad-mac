@@ -29,7 +29,54 @@ for agents.
 | Config | **TOML** via `github.com/BurntSushi/toml` | Human-editable |
 | Raycast extension | **TypeScript** with `@raycast/api` + `@raycast/utils` | Standard Raycast stack |
 
-## Critical gotchas (read every time you touch these areas)
+## Validate
+
+```bash
+make check      # gofmt + go vet + golangci-lint + go test -race + raycast tsc, non-zero on failure
+make test       # go test -race -count=1 ./... then raycast `tsc --noEmit`
+make lint       # golangci-lint run ./...
+make fmt        # gofmt -s -w . + go mod tidy
+make scan       # list nearby WalkingPad BLE devices (dev tool)
+make clean      # remove ./bin
+```
+
+`make` with no target prints the menu. The lefthook pre-commit hook
+(`lefthook.yml`, install once per clone with `brew install lefthook &&
+lefthook install`) runs gofmt, go mod tidy, go vet, golangci-lint and
+`go test -race` on the staged Go files. There is no CI workflow — the hook is
+the gate, so run `make check` before pushing.
+
+## Deploy
+
+`make up` is the one command after every code change: it rebuilds the daemon,
+swaps `/Applications/WalkingPad.app`, kickstarts the LaunchAgent, prints the
+live `/health` version, then starts the Raycast dev loop. `make deploy` runs
+just the ship/restart half — build, install the `.app`, kickstart the agent —
+with no Raycast dev loop and no commands sent to the belt.
+
+The LaunchAgent label is `com.jkrumm.walkingpad`, installed at
+`~/Library/LaunchAgents/com.jkrumm.walkingpad.plist` (first run only; later runs
+just kickstart it). The previous separate `build` / `build-app` / `install` /
+`install-agent` / `reload` / `redeploy` / `version` / `raycast-dev` targets are
+gone — they all folded into `make up`, and `deploy` is that same ship half.
+
+## Verify & Monitor
+
+- **Health URL:** `http://127.0.0.1:7706/health` (loopback only, unauthenticated)
+  → `{"ok":true,"version":"…"}`. `make verify` probes it and exits non-zero if
+  the daemon is not live.
+- **Logs:** `~/Library/Logs/walkingpad.log` and `walkingpad.err`; `make logs`
+  prints a bounded tail of both (no `-f`). `/tmp/walkingpad.log` is stale — the
+  installer moved stdio to `~/Library/Logs` because macOS's periodic `/tmp`
+  sweep unlinked the file while launchd still held the fd.
+- **Kuma monitor name:** none — no walkingpad monitor is registered (the fleet is declared in
+  the homelab repo's `uptime-kuma/monitors.yaml`). Host liveness is covered by the dev-host heartbeat.
+- **OTel `service.name`:** none — the daemon has no OpenTelemetry instrumentation.
+
+## Gotchas
+
+Read every time you touch these areas — the P1 diverges from the public
+references in ways that fail silently.
 
 1. **macOS Bluetooth requires a `.app` bundle.** A bare binary anywhere on `$PATH` (`/opt/homebrew/bin`, `/usr/local/bin`, etc.) is *silently denied* by CoreBluetooth — `Scan()` just returns nothing. The daemon must run from inside `WalkingPad.app` with `Info.plist` declaring `NSBluetoothAlwaysUsageDescription` + `NSBluetoothPeripheralUsageDescription`. We do NOT install a bare binary anywhere — the `.app` at `/Applications/` is the only install target. See docs/protocol.md.
 2. **BLE write rate limit.** Device drops frames if commands arrive faster than ~1.4 Hz. **Enforce a 700 ms minimum gap** between any writes (the `frames.go` writer owns this). Status polls and user commands share the same write channel.
@@ -58,27 +105,6 @@ scripts/                                 # plist, Info.plist.tmpl, build-app-bun
 ```
 
 Full per-file responsibilities in the Layout table above; nothing else moved.
-
-## Devloop
-
-```bash
-make            # default — print the menu
-make up         # THE one — rebuild daemon, deploy to /Applications, kickstart
-                # the LaunchAgent, verify the live /health version, then start
-                # the Raycast dev loop. Run after every code change.
-make test       # go test -race + raycast tsc --noEmit
-make logs       # tail /tmp/walkingpad.log
-make scan       # list nearby WalkingPad BLE devices (dev tool)
-make fmt        # gofmt + go mod tidy
-make lint       # golangci-lint
-make clean      # remove ./bin
-```
-
-The previous separate `build` / `build-app` / `install` / `install-agent` /
-`reload` / `redeploy` / `version` / `raycast-dev` targets are gone — they all
-folded into `make up`. The pre-commit hook runs gofmt + govet + golangci-lint
-+ `go test -race` directly (not via make targets), so removing them doesn't
-break CI.
 
 ## Coding conventions
 

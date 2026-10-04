@@ -11,7 +11,10 @@ APP_INSTALL   := /Applications/$(APP_NAME).app
 PLIST_LABEL   := com.jkrumm.$(BINARY)
 PLIST_TMPL    := ./scripts/$(PLIST_LABEL).plist.tmpl
 PLIST_DST     := $(HOME)/Library/LaunchAgents/$(PLIST_LABEL).plist
-LOG_OUT       := /tmp/$(BINARY).log
+LOG_DIR       := $(HOME)/Library/Logs
+LOG_OUT       := $(LOG_DIR)/$(BINARY).log
+LOG_ERR       := $(LOG_DIR)/$(BINARY).err
+HTTP_PORT     := 7706
 DATA_DIR      := $(HOME)/Library/Application Support/$(APP_NAME)
 
 VERSION       := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -28,10 +31,20 @@ help: ## (default) print this menu
 	@printf "                It rebuilds the daemon, swaps /Applications/WalkingPad.app,\n"
 	@printf "                kickstarts the LaunchAgent, prints the live version for\n"
 	@printf "                confirmation, then starts the Raycast dev loop.\n"
-	@printf "  2. \033[36mmake logs\033[0m — tail the daemon log in another terminal.\n"
+	@printf "  2. \033[36mmake logs\033[0m — print the last daemon log lines (bounded).\n"
 	@printf "  3. \033[36mmake test\033[0m — full Go race suite + Raycast typecheck.\n"
 
-up: ## rebuild daemon, deploy, reload, verify, start Raycast dev (the one command for everything)
+check: ## run all local validation (gofmt, vet, lint, tests) — non-zero on failure
+	@unformatted=$$(gofmt -l $$(git ls-files '*.go')); \
+	  if [ -n "$$unformatted" ]; then echo "gofmt: files need formatting:"; echo "$$unformatted"; exit 1; fi
+	go vet ./...
+	$(MAKE) --no-print-directory lint
+	$(MAKE) --no-print-directory test
+
+up: deploy ## rebuild daemon, deploy, reload, verify, start Raycast dev (the one command for everything)
+	@./scripts/raycast-dev.sh
+
+deploy: ## ship the current build to /Applications and restart the LaunchAgent (no hardware, no Raycast)
 	@mkdir -p $(BIN_DIR)
 	go build $(LDFLAGS) -o $(BIN_DIR)/$(BINARY) $(CMD_DIR)
 	./scripts/build-app-bundle.sh $(BIN_DIR)/$(BINARY) $(VERSION) $(APP_BUNDLE)
@@ -47,16 +60,23 @@ up: ## rebuild daemon, deploy, reload, verify, start Raycast dev (the one comman
 	@sleep 1
 	@printf "daemon source : \033[1m%s\033[0m\n" "$(VERSION)"
 	@printf "daemon live   : "
-	@curl -fs http://127.0.0.1:7706/health | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("version","?"))' 2>/dev/null || echo "(no /health response yet — agent may still be booting)"
+	@curl -fs http://127.0.0.1:$(HTTP_PORT)/health | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("version","?"))' 2>/dev/null || echo "(no /health response yet — agent may still be booting)"
 	@echo "---"
-	@./scripts/raycast-dev.sh
 
 test: ## run all tests (Go race + Raycast typecheck)
 	go test -race -count=1 ./...
 	cd raycast && npx tsc --noEmit
 
-logs: ## tail the daemon log
-	@test -f $(LOG_OUT) && tail -f $(LOG_OUT) || echo "$(LOG_OUT) does not exist yet"
+verify: ## probe the running daemon's /health — exit 0 = live and healthy
+	@curl -fsS http://127.0.0.1:$(HTTP_PORT)/health >/dev/null \
+	  && echo "walkingpad: live — /health OK" \
+	  || { echo "walkingpad: NOT live — /health failed" >&2; exit 1; }
+
+logs: ## print a bounded tail of the daemon logs in ~/Library/Logs, then exit
+	@for f in $(LOG_OUT) $(LOG_ERR); do \
+	  printf "\n==> %s <==\n" "$$f"; \
+	  if [ -f "$$f" ]; then tail -n 50 "$$f"; else echo "(missing)"; fi; \
+	done
 
 scan: ## list nearby WalkingPad BLE devices (dev tool, not the daemon)
 	@mkdir -p $(BIN_DIR)
@@ -74,4 +94,4 @@ lint: ## run golangci-lint (pre-commit hook also runs this)
 clean: ## remove build artifacts
 	rm -rf $(BIN_DIR) coverage.out
 
-.PHONY: help up test logs scan fmt lint clean
+.PHONY: help check up deploy test verify logs scan fmt lint clean
